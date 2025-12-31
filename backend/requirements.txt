@@ -1,0 +1,35 @@
+# ==============================================================================
+# HappyCoach2 Backend Dependencies
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Web Framework
+# ------------------------------------------------------------------------------
+fastapi>=0.109.0              # Modern async API framework
+uvicorn[standard]>=0.27.0     # ASGI server with WebSocket support
+python-multipart>=0.0.6       # File upload handling
+
+# ------------------------------------------------------------------------------
+# WebSocket & Real-time
+# ------------------------------------------------------------------------------
+websockets>=12.0              # WebSocket protocol support
+
+# ------------------------------------------------------------------------------
+# Computer Vision & ML
+# ------------------------------------------------------------------------------
+mediapipe>=0.10.30            # Google's pose detection ML (latest)
+opencv-python>=4.9.0.80       # Image/video processing
+numpy>=1.26.0                 # Numerical computations
+
+# ------------------------------------------------------------------------------
+# Data Validation & Utils
+# ------------------------------------------------------------------------------
+pydantic>=2.5.0               # Data validation with type hints
+python-dotenv>=1.0.0          # Environment variable management
+
+# ------------------------------------------------------------------------------
+# Development & Testing
+# ------------------------------------------------------------------------------
+pytest>=7.4.0                 # Testing framework
+pytest-asyncio>=0.23.0        # Async test support
+httpx>=0.26.0                 # Async HTTP client for testing
