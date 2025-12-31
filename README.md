@@ -85,4 +85,4 @@ MIT
 
 ## Author
 
-Adam Lisnell - [Lund University](https://lu.se) → [KTH MSc Application](https://kth.se)
+Adam Lisnell
