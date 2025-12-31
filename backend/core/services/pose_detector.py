@@ -4,13 +4,12 @@ Pose Detector Service
 Wrapper around MediaPipe Pose for detecting body landmarks in images/video.
 Handles all MediaPipe-specific logic and converts to our domain models.
 
-Note: MediaPipe's type stubs are incomplete, so we use type: ignore comments
-for mp.solutions access. This is a known issue with the mediapipe package.
+Note: MediaPipe 0.10.30+ uses a new Tasks API. This module supports both
+the legacy solutions API and the new Tasks API.
 """
 
 import cv2
 import numpy as np
-import mediapipe as mp
 from typing import Optional, List, Generator, Any
 from pathlib import Path
 
@@ -42,11 +41,6 @@ class PoseDetector:
             frame = detector.detect_pose(image)
     """
     
-    # MediaPipe solutions (type stubs are incomplete, so we store as Any)
-    _mp_pose: Any
-    _mp_drawing: Any
-    _mp_drawing_styles: Any
-    
     def __init__(
         self,
         model_complexity: int = 1,
@@ -64,19 +58,71 @@ class PoseDetector:
             min_tracking_confidence: Minimum confidence for landmark tracking.
             enable_segmentation: Whether to output segmentation mask.
         """
-        # MediaPipe's type stubs don't include solutions, but it exists at runtime
-        self._mp_pose = mp.solutions.pose  # type: ignore[attr-defined]
-        self._mp_drawing = mp.solutions.drawing_utils  # type: ignore[attr-defined]
-        self._mp_drawing_styles = mp.solutions.drawing_styles  # type: ignore[attr-defined]
+        self._pose = None
+        self._use_legacy_api = False
         
-        self.pose = self._mp_pose.Pose(
-            static_image_mode=False,  # Set to True for unrelated images
-            model_complexity=model_complexity,
-            smooth_landmarks=True,
-            enable_segmentation=enable_segmentation,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence,
-        )
+        # Try new Tasks API first (MediaPipe 0.10.30+)
+        try:
+            import mediapipe as mp
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
+            
+            # Download model if needed - use pose landmarker
+            base_options = python.BaseOptions(
+                model_asset_path=self._get_model_path()
+            )
+            
+            options = vision.PoseLandmarkerOptions(
+                base_options=base_options,
+                running_mode=vision.RunningMode.IMAGE,
+                min_pose_detection_confidence=min_detection_confidence,
+                min_tracking_confidence=min_tracking_confidence,
+            )
+            
+            self._pose = vision.PoseLandmarker.create_from_options(options)
+            self._use_legacy_api = False
+            
+        except (ImportError, Exception) as e:
+            # Fall back to legacy solutions API
+            try:
+                import mediapipe as mp
+                self._mp_pose = mp.solutions.pose  # type: ignore[attr-defined]
+                self._pose = self._mp_pose.Pose(
+                    static_image_mode=False,
+                    model_complexity=model_complexity,
+                    smooth_landmarks=True,
+                    enable_segmentation=enable_segmentation,
+                    min_detection_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence,
+                )
+                self._use_legacy_api = True
+            except Exception as e2:
+                raise RuntimeError(
+                    f"Could not initialize MediaPipe. "
+                    f"Tasks API error: {e}, Legacy API error: {e2}"
+                )
+    
+    def _get_model_path(self) -> str:
+        """Get or download the pose landmarker model."""
+        import os
+        import urllib.request
+        
+        # Model URL from MediaPipe
+        model_url = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
+        
+        # Save to cache directory
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "happycoach")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        model_path = os.path.join(cache_dir, "pose_landmarker.task")
+        
+        # Download if not exists
+        if not os.path.exists(model_path):
+            print(f"Downloading MediaPipe pose model to {model_path}...")
+            urllib.request.urlretrieve(model_url, model_path)
+            print("Download complete!")
+        
+        return model_path
     
     def __enter__(self) -> "PoseDetector":
         """Context manager entry."""
@@ -93,8 +139,14 @@ class PoseDetector:
     
     def close(self) -> None:
         """Release MediaPipe resources."""
-        self.pose.close()
-    
+        if self._pose is not None:
+            if self._use_legacy_api:
+                try:
+                    self._pose.close()
+                except AttributeError:
+                    pass  # Some versions don't have close()
+            # Tasks API doesn't need explicit close
+            self._pose = None
     # -------------------------------------------------------------------------
     # Core Detection Methods
     # -------------------------------------------------------------------------
@@ -122,17 +174,61 @@ class PoseDetector:
         else:
             image_rgb = image
         
-        # Process the image
-        results = self.pose.process(image_rgb)
+        if self._use_legacy_api:
+            return self._detect_legacy(image_rgb, timestamp_ms, frame_number)
+        else:
+            return self._detect_tasks(image_rgb, timestamp_ms, frame_number)
+    
+    def _detect_legacy(
+        self,
+        image_rgb: np.ndarray,
+        timestamp_ms: int,
+        frame_number: int
+    ) -> Optional[PoseFrame]:
+        """Detect using legacy solutions API."""
+        if self._pose is None:
+            return None
         
-        # Check if pose was detected
+        results = self._pose.process(image_rgb)
+        
         if not results.pose_landmarks:
             return None
         
-        # Convert MediaPipe landmarks to our domain model
-        landmarks = self._convert_landmarks(results.pose_landmarks.landmark)
+        landmarks = self._convert_legacy_landmarks(results.pose_landmarks.landmark)
+        avg_confidence = sum(lm.visibility for lm in landmarks) / len(landmarks)
         
-        # Calculate overall confidence (average visibility)
+        return PoseFrame(
+            landmarks=landmarks,
+            timestamp_ms=timestamp_ms,
+            frame_number=frame_number,
+            confidence=avg_confidence,
+        )
+    
+    def _detect_tasks(
+        self,
+        image_rgb: np.ndarray,
+        timestamp_ms: int,
+        frame_number: int
+    ) -> Optional[PoseFrame]:
+        """Detect using new Tasks API."""
+        if self._pose is None:
+            return None
+        
+        import mediapipe as mp
+        
+        # Create MediaPipe Image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+        
+        # Detect
+        results = self._pose.detect(mp_image)
+        
+        if not results.pose_landmarks or len(results.pose_landmarks) == 0:
+            return None
+        
+        # Get first person's landmarks
+        pose_landmarks = results.pose_landmarks[0]
+        
+        landmarks = self._convert_tasks_landmarks(pose_landmarks)
         avg_confidence = sum(lm.visibility for lm in landmarks) / len(landmarks)
         
         return PoseFrame(
@@ -315,15 +411,11 @@ class PoseDetector:
     # Private Helper Methods
     # -------------------------------------------------------------------------
     
-    def _convert_landmarks(
-        self,
-        mp_landmarks: Any
-    ) -> List[PoseLandmark]:
-        """Convert MediaPipe landmarks to our domain model."""
+    def _convert_legacy_landmarks(self, mp_landmarks: Any) -> List[PoseLandmark]:
+        """Convert legacy MediaPipe landmarks to our domain model."""
         landmarks = []
         
         for i, mp_lm in enumerate(mp_landmarks):
-            # Try to map to BodyPart enum
             try:
                 body_part = BodyPart(i)
             except ValueError:
@@ -340,9 +432,29 @@ class PoseDetector:
         
         return landmarks
     
+    def _convert_tasks_landmarks(self, pose_landmarks: Any) -> List[PoseLandmark]:
+        """Convert Tasks API landmarks to our domain model."""
+        landmarks = []
+        
+        for i, lm in enumerate(pose_landmarks):
+            try:
+                body_part = BodyPart(i)
+            except ValueError:
+                body_part = None
+            
+            landmark = PoseLandmark(
+                x=lm.x,
+                y=lm.y,
+                z=lm.z,
+                visibility=lm.visibility if hasattr(lm, 'visibility') else lm.presence,
+                body_part=body_part,
+            )
+            landmarks.append(landmark)
+        
+        return landmarks
+    
     def _get_pose_connections(self) -> List[tuple[int, int]]:
         """Get landmark connection pairs for drawing skeleton."""
-        # MediaPipe pose connections
         return [
             # Face
             (0, 1), (1, 2), (2, 3), (3, 7),
