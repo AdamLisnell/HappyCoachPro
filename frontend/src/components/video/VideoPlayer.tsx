@@ -110,30 +110,53 @@ export function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
 
-    const handleTimeUpdate = () => {
-      setCurrentTime(video.currentTime);
-      onTimeUpdate?.(video.currentTime, video.duration);
-      
-      const frameNumber = Math.floor(video.currentTime * fps);
-      onFrameChange?.(frameNumber);
-    };
+    const handleLoadedMetadata = () => setDuration(video.duration);
+    const handleEnded = () => setIsPlaying(false);
 
-    const handleLoadedMetadata = () => {
-      setDuration(video.duration);
-    };
-
-    const handleEnded = () => {
-      setIsPlaying(false);
-    };
-
-    video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('ended', handleEnded);
 
     return () => {
-      video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('ended', handleEnded);
+    };
+  }, []);
+
+  // rAF loop fires at ~60fps while playing for smooth skeleton sync
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    let rafId: number;
+    let lastReportedTime = -1;
+
+    const tick = () => {
+      if (video && !video.paused && !video.ended) {
+        const t = video.currentTime;
+        setCurrentTime(t);
+        if (t !== lastReportedTime) {
+          onTimeUpdate?.(t, video.duration);
+          onFrameChange?.(Math.floor(t * fps));
+          lastReportedTime = t;
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    // Also handle seek/pause-scrub via timeupdate (covers paused scrubbing)
+    const handleTimeUpdate = () => {
+      const t = video.currentTime;
+      setCurrentTime(t);
+      onTimeUpdate?.(t, video.duration);
+      onFrameChange?.(Math.floor(t * fps));
+    };
+
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    rafId = requestAnimationFrame(tick);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      video.removeEventListener('timeupdate', handleTimeUpdate);
     };
   }, [fps, onTimeUpdate, onFrameChange]);
 

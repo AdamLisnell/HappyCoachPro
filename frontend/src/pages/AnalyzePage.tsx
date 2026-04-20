@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { VideoUpload } from '@/components/video/VideoUpload';
 import { VideoPlayer } from '@/components/video/VideoPlayer';
@@ -36,15 +36,15 @@ const CLUB_OPTIONS: { value: GolfClub; label: string }[] = [
   { value: 'putter', label: 'Putter' },
 ];
 
-const ANALYSIS_FPS = 12; // frames per second of video to analyze
+const ANALYSIS_FPS = 24; // frames per second of video to analyze
 
 export function AnalyzePage() {
   const [pageState, setPageState] = useState<PageState>('upload');
   const [selectedClub, setSelectedClub] = useState<GolfClub>('iron_7');
   const [cameraAngle, setCameraAngle] = useState<CameraAngle>('side');
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [poseFrames, setPoseFrames] = useState<Map<number, PoseFrame>>(new Map());
-  const [currentFrame, setCurrentFrame] = useState(0);
+  const [poseFrames, setPoseFrames] = useState<PoseFrame[]>([]);
+  const [currentVideoTime, setCurrentVideoTime] = useState(0);
   const [analyzeProgress, setAnalyzeProgress] = useState(0);
   const [videoSize, setVideoSize] = useState({ width: 640, height: 480 });
   const [swingAnalysis, setSwingAnalysis] = useState<SwingAnalysis | null>(null);
@@ -81,7 +81,7 @@ export function AnalyzePage() {
 
   const handleVideoSelected = useCallback(async (file: File, url: string) => {
     setVideoUrl(url);
-    setPoseFrames(new Map());
+    setPoseFrames([]);
     setSwingAnalysis(null);
     setCoachReport(null);
     setCoachError(null);
@@ -130,11 +130,7 @@ export function AnalyzePage() {
         const pose = poseDetector.detectImage(canvas, frameNumber, Math.round(t * 1000));
         if (pose) {
           collectedFrames.push(pose);
-          setPoseFrames((prev) => {
-            const m = new Map(prev);
-            m.set(frameNumber, pose);
-            return m;
-          });
+          setPoseFrames((prev) => [...prev, pose]);
         }
       }
       frameNumber++;
@@ -165,19 +161,59 @@ export function AnalyzePage() {
     cancelRef.current = true;
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideoUrl(null);
-    setPoseFrames(new Map());
+    setPoseFrames([]);
     setSwingAnalysis(null);
     setCoachReport(null);
     setPageState('upload');
     setAnalyzeProgress(0);
   }, [videoUrl]);
 
-  const currentPose = poseFrames.get(currentFrame) ?? null;
+  // Interpolate between the two nearest analyzed frames for smooth skeleton tracking
+  const currentPose = useMemo((): PoseFrame | null => {
+    if (!poseFrames.length) return null;
+    const targetMs = currentVideoTime * 1000;
+
+    // Binary search for insertion point
+    let lo = 0, hi = poseFrames.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (poseFrames[mid].timestamp_ms < targetMs) lo = mid + 1;
+      else hi = mid;
+    }
+
+    if (lo === 0) return poseFrames[0];
+    if (lo >= poseFrames.length) return poseFrames[poseFrames.length - 1];
+
+    const before = poseFrames[lo - 1];
+    const after = poseFrames[lo];
+    const span = after.timestamp_ms - before.timestamp_ms;
+    if (span <= 0) return before;
+
+    // Linear interpolation factor
+    const t = Math.min(1, Math.max(0, (targetMs - before.timestamp_ms) / span));
+    if (t < 0.01) return before;
+    if (t > 0.99) return after;
+
+    return {
+      ...before,
+      landmarks: before.landmarks.map((lm, i) => {
+        const b = after.landmarks[i];
+        if (!b) return lm;
+        return {
+          ...lm,
+          x: lm.x + (b.x - lm.x) * t,
+          y: lm.y + (b.y - lm.y) * t,
+          z: lm.z + (b.z - lm.z) * t,
+          visibility: lm.visibility + (b.visibility - lm.visibility) * t,
+        };
+      }),
+    };
+  }, [poseFrames, currentVideoTime]);
 
   const headerSubtitle = {
     upload: 'Upload a video',
     analyzing: `${analyzeProgress}% complete`,
-    results: `${poseFrames.size} frames analyzed`,
+    results: `${poseFrames.length} frames analyzed`,
   }[pageState];
 
   const headerTitle = {
@@ -282,7 +318,7 @@ export function AnalyzePage() {
                 style={{ width: `${analyzeProgress}%` }}
               />
             </div>
-            <p className="text-[var(--color-text-muted)] text-sm">{poseFrames.size} frames processed</p>
+            <p className="text-[var(--color-text-muted)] text-sm">{poseFrames.length} frames processed</p>
           </div>
         )}
 
@@ -292,7 +328,7 @@ export function AnalyzePage() {
             {/* Video with skeleton overlay */}
             <VideoPlayer
               src={videoUrl}
-              onFrameChange={setCurrentFrame}
+              onTimeUpdate={(t) => setCurrentVideoTime(t)}
               fps={ANALYSIS_FPS}
               overlay={
                 currentPose ? (
