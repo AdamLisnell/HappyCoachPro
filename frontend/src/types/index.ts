@@ -151,6 +151,31 @@ export interface PoseDetectionResponse {
 }
 
 // =============================================================================
+// AI Coaching Types
+// =============================================================================
+
+export interface AICoachingReport {
+  narrative: string;
+  focus_areas: string[];
+  practice_plan: string;
+  generated_at: string;
+}
+
+// =============================================================================
+// History Types
+// =============================================================================
+
+export interface HistoryEntry {
+  id: string;
+  timestamp: string;
+  club: GolfClub;
+  overall_score: number;
+  grade: string;
+  summary: string;
+  analysis: SwingAnalysis;
+}
+
+// =============================================================================
 // App State Types
 // =============================================================================
 

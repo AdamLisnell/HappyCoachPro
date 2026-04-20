@@ -1,30 +1,23 @@
-/**
- * Record Page
- * 
- * Camera view with real-time pose detection and recording.
- */
-
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { 
-  Camera, 
-  Circle, 
-  Square, 
-  RotateCcw, 
-  Wifi, 
-  WifiOff,
-} from 'lucide-react';
+import { Camera, Circle, Square, RotateCcw, Zap, ZapOff } from 'lucide-react';
 import { useCamera } from '@/hooks/useCamera';
-import { useWebSocket } from '@/hooks/useWebSocket';
 import { SkeletonOverlay } from '@/components/analysis/SkeletonOverlay';
+import * as poseDetector from '@/lib/poseDetector';
+import type { PoseFrame } from '@/types';
 
 export function RecordPage() {
   const [showSkeleton, setShowSkeleton] = useState(true);
   const [overlaySize, setOverlaySize] = useState({ width: 640, height: 480 });
+  const [currentPose, setCurrentPose] = useState<PoseFrame | null>(null);
+  const [detectorReady, setDetectorReady] = useState(false);
+  const [fps, setFps] = useState(0);
+
   const frameNumberRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
-  const videoContainerRef = useRef<HTMLDivElement | null>(null);
+  const lastFrameTimeRef = useRef(0);
+  const fpsCountRef = useRef(0);
+  const fpsTimerRef = useRef(0);
 
-  // Camera hook
   const {
     videoRef,
     canvasRef,
@@ -35,67 +28,39 @@ export function RecordPage() {
     stopCamera,
     startRecording,
     stopRecording,
-    captureFrame,
     switchCamera,
   } = useCamera({ facingMode: 'environment' });
 
-  // WebSocket hook
-  const {
-    isConnected,
-    error: wsError,
-    lastPose,
-    processingTime,
-    frameCount,
-    connect,
-    disconnect,
-    sendFrame,
-  } = useWebSocket('ws://localhost:8000/ws/pose');
-
-  // Update overlay size to match the DISPLAYED video size
+  // Initialize MediaPipe eagerly
   useEffect(() => {
-    const updateOverlaySize = () => {
+    poseDetector.initialize().then(() => setDetectorReady(true)).catch(console.error);
+  }, []);
+
+  // Sync overlay size to displayed video size
+  useEffect(() => {
+    const update = () => {
       if (videoRef.current) {
-        const video = videoRef.current;
-        const rect = video.getBoundingClientRect();
-        
-        if (rect.width > 0 && rect.height > 0) {
-          setOverlaySize({
-            width: rect.width,
-            height: rect.height,
-          });
-        }
+        const { width, height } = videoRef.current.getBoundingClientRect();
+        if (width > 0 && height > 0) setOverlaySize({ width, height });
       }
     };
-
-    // Update on video metadata loaded
     const video = videoRef.current;
-    if (video) {
-      video.addEventListener('loadedmetadata', updateOverlaySize);
-      video.addEventListener('resize', updateOverlaySize);
-    }
-
-    // Also update on window resize
-    window.addEventListener('resize', updateOverlaySize);
-
-    // Initial update
-    updateOverlaySize();
-
-    // Poll for size changes (backup)
-    const interval = setInterval(updateOverlaySize, 500);
-
+    video?.addEventListener('loadedmetadata', update);
+    video?.addEventListener('resize', update);
+    window.addEventListener('resize', update);
+    update();
+    const id = setInterval(update, 500);
     return () => {
-      if (video) {
-        video.removeEventListener('loadedmetadata', updateOverlaySize);
-        video.removeEventListener('resize', updateOverlaySize);
-      }
-      window.removeEventListener('resize', updateOverlaySize);
-      clearInterval(interval);
+      video?.removeEventListener('loadedmetadata', update);
+      video?.removeEventListener('resize', update);
+      window.removeEventListener('resize', update);
+      clearInterval(id);
     };
   }, [isStreaming, videoRef]);
 
-  // Frame capture loop for real-time pose detection
+  // Pose detection loop — runs directly in browser, no backend needed
   useEffect(() => {
-    if (!isStreaming || !isConnected || !showSkeleton) {
+    if (!isStreaming || !detectorReady || !showSkeleton) {
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
@@ -103,51 +68,63 @@ export function RecordPage() {
       return;
     }
 
-    const captureLoop = () => {
-      const frame = captureFrame();
-      if (frame) {
-        sendFrame(frame, frameNumberRef.current++);
+    const loop = () => {
+      const now = performance.now();
+      // ~20fps cap to leave CPU headroom on phone
+      if (now - lastFrameTimeRef.current >= 50 && videoRef.current) {
+        const pose = poseDetector.detectForVideo(
+          videoRef.current,
+          frameNumberRef.current++,
+          now,
+        );
+        if (pose) setCurrentPose(pose);
+        lastFrameTimeRef.current = now;
+
+        // FPS counter
+        fpsCountRef.current++;
+        if (now - fpsTimerRef.current >= 1000) {
+          setFps(fpsCountRef.current);
+          fpsCountRef.current = 0;
+          fpsTimerRef.current = now;
+        }
       }
-      // Capture at ~15fps for real-time detection
-      animationFrameRef.current = requestAnimationFrame(() => {
-        setTimeout(captureLoop, 66); // ~15fps
-      });
+      animationFrameRef.current = requestAnimationFrame(loop);
     };
 
-    captureLoop();
-
+    loop();
     return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isStreaming, isConnected, showSkeleton, captureFrame, sendFrame]);
+  }, [isStreaming, detectorReady, showSkeleton, videoRef]);
 
-  // Handle start/stop camera
   const handleCameraToggle = useCallback(async () => {
     if (isStreaming) {
       stopCamera();
-      disconnect();
+      setCurrentPose(null);
     } else {
       await startCamera();
-      connect();
     }
-  }, [isStreaming, startCamera, stopCamera, connect, disconnect]);
+  }, [isStreaming, startCamera, stopCamera]);
 
-  // Handle recording toggle
   const handleRecordToggle = useCallback(async () => {
     if (isRecording) {
       const blob = await stopRecording();
       if (blob) {
-        // TODO: Handle recorded video
-        console.log('Recorded video blob:', blob);
+        // Download the recorded video so user can upload to Analyze tab
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `swing-${Date.now()}.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
       }
     } else {
       startRecording();
     }
   }, [isRecording, startRecording, stopRecording]);
 
-  const error = cameraError || wsError;
+  const error = cameraError;
+  const active = isStreaming && detectorReady && showSkeleton;
 
   return (
     <div className="min-h-screen bg-[var(--color-surface)] flex flex-col">
@@ -159,47 +136,32 @@ export function RecordPage() {
           </div>
           <div>
             <h1 className="text-lg font-bold text-[var(--color-text)]">HappyCoach</h1>
-            <p className="text-xs text-[var(--color-accent)] uppercase tracking-wider">
-              Swing Analyzer
-            </p>
+            <p className="text-xs text-[var(--color-accent)] uppercase tracking-wider">Swing Analyzer</p>
           </div>
         </div>
-        
-        {/* Connection status */}
+
         <div className="flex items-center gap-2">
-          {isConnected ? (
+          {active ? (
             <div className="flex items-center gap-1.5 text-green-400">
-              <Wifi className="w-4 h-4" />
-              <span className="text-xs">{processingTime.toFixed(0)}ms</span>
+              <Zap className="w-4 h-4" />
+              <span className="text-xs font-mono">{fps}fps</span>
             </div>
           ) : (
             <div className="flex items-center gap-1.5 text-gray-400">
-              <WifiOff className="w-4 h-4" />
-              <span className="text-xs">Offline</span>
+              <ZapOff className="w-4 h-4" />
+              <span className="text-xs">{detectorReady ? 'Ready' : 'Loading…'}</span>
             </div>
           )}
         </div>
       </header>
 
-      {/* Video Area */}
-      <div 
-        ref={videoContainerRef}
-        className="flex-1 relative bg-black flex items-center justify-center overflow-hidden"
-      >
-        {/* Video element */}
-        <video
-          ref={videoRef}
-          className="max-w-full max-h-full object-contain"
-          playsInline
-          muted
-        />
-
-        {/* Hidden canvas for frame capture */}
+      {/* Video */}
+      <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
+        <video ref={videoRef} className="max-w-full max-h-full object-contain" playsInline muted />
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* Skeleton overlay - positioned over the video */}
-        {showSkeleton && lastPose && isStreaming && (
-          <div 
+        {showSkeleton && currentPose && isStreaming && (
+          <div
             className="absolute pointer-events-none"
             style={{
               width: overlaySize.width,
@@ -209,15 +171,10 @@ export function RecordPage() {
               transform: 'translate(-50%, -50%)',
             }}
           >
-            <SkeletonOverlay
-              pose={lastPose}
-              width={overlaySize.width}
-              height={overlaySize.height}
-            />
+            <SkeletonOverlay pose={currentPose} width={overlaySize.width} height={overlaySize.height} />
           </div>
         )}
 
-        {/* Recording indicator */}
         {isRecording && (
           <div className="absolute top-4 left-4 flex items-center gap-2 bg-red-500/80 px-3 py-1.5 rounded-full">
             <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
@@ -225,34 +182,26 @@ export function RecordPage() {
           </div>
         )}
 
-        {/* Frame counter */}
-        {isConnected && (
-          <div className="absolute top-4 right-4 bg-black/50 px-2 py-1 rounded text-xs text-white font-mono">
-            Frames: {frameCount}
-          </div>
-        )}
-
-        {/* Debug info */}
-        {isStreaming && (
-          <div className="absolute bottom-4 right-4 bg-black/50 px-2 py-1 rounded text-xs text-white font-mono">
-            {overlaySize.width}x{overlaySize.height}
-          </div>
-        )}
-
-        {/* Error message */}
         {error && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-500/90 px-4 py-2 rounded-lg">
             <p className="text-white text-sm">{error}</p>
           </div>
         )}
 
-        {/* Camera off state */}
-        {!isStreaming && (
+        {!navigator.mediaDevices && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[var(--color-primary-dark)]/95 p-6 text-center">
+            <Camera className="w-12 h-12 text-yellow-400 mb-3" />
+            <p className="text-[var(--color-text)] font-medium mb-2">Camera not available</p>
+            <p className="text-[var(--color-text-muted)] text-sm">
+              Please open this app in Safari (iOS 16.4+) or Chrome for camera access.
+            </p>
+          </div>
+        )}
+
+        {!isStreaming && navigator.mediaDevices && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-[var(--color-primary-dark)]/90">
             <Camera className="w-16 h-16 text-[var(--color-text-muted)] mb-4" />
-            <p className="text-[var(--color-text-secondary)] mb-6">
-              Camera is off
-            </p>
+            <p className="text-[var(--color-text-secondary)] mb-6">Camera is off</p>
             <button
               onClick={handleCameraToggle}
               className="bg-[var(--color-accent)] text-[var(--color-primary-dark)] px-6 py-3 rounded-xl font-semibold flex items-center gap-2 hover:bg-[var(--color-accent-light)] transition-colors"
@@ -267,22 +216,18 @@ export function RecordPage() {
       {/* Controls */}
       <div className="bg-[var(--color-primary)] px-4 py-6">
         <div className="flex items-center justify-center gap-6">
-          {/* Switch camera */}
           <button
             onClick={switchCamera}
             disabled={!isStreaming}
-            title="Switch camera"
             aria-label="Switch camera"
             className="w-12 h-12 rounded-full bg-[var(--color-surface-card)] flex items-center justify-center border border-[var(--color-primary-light)] disabled:opacity-50"
           >
             <RotateCcw className="w-5 h-5 text-[var(--color-text-secondary)]" />
           </button>
 
-          {/* Record button */}
           <button
             onClick={handleRecordToggle}
             disabled={!isStreaming}
-            title={isRecording ? 'Stop recording' : 'Start recording'}
             aria-label={isRecording ? 'Stop recording' : 'Start recording'}
             className={`w-20 h-20 rounded-full flex items-center justify-center border-4 transition-all ${
               isRecording
@@ -297,10 +242,8 @@ export function RecordPage() {
             )}
           </button>
 
-          {/* Toggle skeleton */}
           <button
             onClick={() => setShowSkeleton(!showSkeleton)}
-            title="Toggle skeleton overlay"
             aria-label="Toggle skeleton overlay"
             className={`w-12 h-12 rounded-full flex items-center justify-center border ${
               showSkeleton
@@ -310,12 +253,8 @@ export function RecordPage() {
           >
             <svg
               className={`w-5 h-5 ${showSkeleton ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-secondary)]'}`}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
             >
-              {/* Simple skeleton icon */}
               <circle cx="12" cy="4" r="2" />
               <line x1="12" y1="6" x2="12" y2="14" />
               <line x1="8" y1="8" x2="16" y2="8" />
@@ -325,12 +264,11 @@ export function RecordPage() {
           </button>
         </div>
 
-        {/* Status text */}
         <p className="text-center text-[var(--color-text-muted)] text-sm mt-4">
           {!isStreaming
             ? 'Tap to start camera'
             : isRecording
-            ? 'Recording... Tap to stop'
+            ? 'Recording… tap to stop and download'
             : 'Position yourself and tap record'}
         </p>
       </div>
