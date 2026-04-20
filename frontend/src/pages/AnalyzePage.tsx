@@ -13,6 +13,39 @@ import { analyzeFrames } from '@/lib/swingAnalyzer';
 import { saveAnalysis } from '@/lib/historyStore';
 import type { PoseFrame, SwingAnalysis, GolfClub, AICoachingReport } from '@/types';
 
+// Bidirectional EMA to smooth out per-frame MediaPipe jitter.
+// alpha=1 → no smoothing; alpha≈0.45 → balanced smooth/lag trade-off.
+function smoothLandmarks(frames: PoseFrame[], alpha: number): PoseFrame[] {
+  if (frames.length < 2) return frames;
+  const clone = frames.map(f => ({
+    ...f,
+    landmarks: f.landmarks.map(lm => ({ ...lm })),
+  }));
+  // Forward pass
+  for (let i = 1; i < clone.length; i++) {
+    const prev = clone[i - 1].landmarks;
+    const curr = clone[i].landmarks;
+    for (let j = 0; j < curr.length; j++) {
+      if (!prev[j]) continue;
+      curr[j].x = prev[j].x * (1 - alpha) + curr[j].x * alpha;
+      curr[j].y = prev[j].y * (1 - alpha) + curr[j].y * alpha;
+      curr[j].z = prev[j].z * (1 - alpha) + curr[j].z * alpha;
+    }
+  }
+  // Backward pass (removes lag introduced by forward pass)
+  for (let i = clone.length - 2; i >= 0; i--) {
+    const next = clone[i + 1].landmarks;
+    const curr = clone[i].landmarks;
+    for (let j = 0; j < curr.length; j++) {
+      if (!next[j]) continue;
+      curr[j].x = next[j].x * (1 - alpha) + curr[j].x * alpha;
+      curr[j].y = next[j].y * (1 - alpha) + curr[j].y * alpha;
+      curr[j].z = next[j].z * (1 - alpha) + curr[j].z * alpha;
+    }
+  }
+  return clone;
+}
+
 type PageState = 'upload' | 'analyzing' | 'results';
 type CameraAngle = 'side' | 'behind';
 
@@ -145,9 +178,13 @@ export function AnalyzePage() {
       return;
     }
 
+    // Smooth landmark positions: forward + backward EMA to remove MediaPipe jitter
+    const smoothed = smoothLandmarks(collectedFrames, 0.45);
+    setPoseFrames(smoothed);
+
     try {
       const fps = 1 / step;
-      const result = analyzeFrames(collectedFrames, selectedClub, fps, Math.round(duration * 1000));
+      const result = analyzeFrames(smoothed, selectedClub, fps, Math.round(duration * 1000));
       setSwingAnalysis(result);
       await saveAnalysis(result).catch(() => {}); // non-blocking
       setPageState('results');
