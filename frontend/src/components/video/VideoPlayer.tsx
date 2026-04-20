@@ -40,35 +40,51 @@ export function VideoPlayer({
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [contentArea, setContentArea] = useState({ width: 640, height: 480, offsetX: 0, offsetY: 0 });
 
-  // Calculate actual video content area inside the element, accounting for object-contain letterboxing
+  // Calculate actual video content area relative to the container div.
+  // Must account for: (1) the video element's position inside the flex container,
+  // and (2) the letterbox offset inside the element due to object-contain.
   const updateContentArea = useCallback(() => {
     const video = videoRef.current;
-    if (!video) return;
-    const rect = video.getBoundingClientRect();
-    const elW = rect.width;
-    const elH = rect.height;
+    const container = containerRef.current;
+    if (!video || !container) return;
+
+    const videoRect = video.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+
+    const elW = videoRect.width;
+    const elH = videoRect.height;
     if (elW === 0 || elH === 0) return;
+
+    // Video element's top-left corner relative to the container
+    const elLeft = videoRect.left - containerRect.left;
+    const elTop = videoRect.top - containerRect.top;
 
     const intrinsicW = video.videoWidth || elW;
     const intrinsicH = video.videoHeight || elH;
     const videoAspect = intrinsicW / intrinsicH;
     const elementAspect = elW / elH;
 
-    let contentW: number, contentH: number, offsetX: number, offsetY: number;
+    let contentW: number, contentH: number, letterboxX: number, letterboxY: number;
     if (videoAspect > elementAspect) {
-      // Video wider than box — bars on top/bottom
+      // Wider video — bars top/bottom inside element
       contentW = elW;
       contentH = elW / videoAspect;
-      offsetX = 0;
-      offsetY = (elH - contentH) / 2;
+      letterboxX = 0;
+      letterboxY = (elH - contentH) / 2;
     } else {
-      // Video taller than box — bars on left/right
+      // Taller video — bars left/right inside element
       contentH = elH;
       contentW = elH * videoAspect;
-      offsetX = (elW - contentW) / 2;
-      offsetY = 0;
+      letterboxX = (elW - contentW) / 2;
+      letterboxY = 0;
     }
-    setContentArea({ width: contentW, height: contentH, offsetX, offsetY });
+
+    setContentArea({
+      width: contentW,
+      height: contentH,
+      offsetX: elLeft + letterboxX,
+      offsetY: elTop + letterboxY,
+    });
   }, []);
 
   useEffect(() => {
