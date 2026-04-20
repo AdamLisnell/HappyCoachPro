@@ -38,37 +38,56 @@ export function VideoPlayer({
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
-  const [videoSize, setVideoSize] = useState({ width: 640, height: 480 });
+  const [contentArea, setContentArea] = useState({ width: 640, height: 480, offsetX: 0, offsetY: 0 });
 
-  // Update video size for overlay positioning
+  // Calculate actual video content area inside the element, accounting for object-contain letterboxing
+  const updateContentArea = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const rect = video.getBoundingClientRect();
+    const elW = rect.width;
+    const elH = rect.height;
+    if (elW === 0 || elH === 0) return;
+
+    const intrinsicW = video.videoWidth || elW;
+    const intrinsicH = video.videoHeight || elH;
+    const videoAspect = intrinsicW / intrinsicH;
+    const elementAspect = elW / elH;
+
+    let contentW: number, contentH: number, offsetX: number, offsetY: number;
+    if (videoAspect > elementAspect) {
+      // Video wider than box — bars on top/bottom
+      contentW = elW;
+      contentH = elW / videoAspect;
+      offsetX = 0;
+      offsetY = (elH - contentH) / 2;
+    } else {
+      // Video taller than box — bars on left/right
+      contentH = elH;
+      contentW = elH * videoAspect;
+      offsetX = (elW - contentW) / 2;
+      offsetY = 0;
+    }
+    setContentArea({ width: contentW, height: contentH, offsetX, offsetY });
+  }, []);
+
   useEffect(() => {
-    const updateSize = () => {
-      if (videoRef.current) {
-        const rect = videoRef.current.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          setVideoSize({ width: rect.width, height: rect.height });
-        }
-      }
-    };
-
     const video = videoRef.current;
     if (video) {
-      video.addEventListener('loadedmetadata', updateSize);
-      video.addEventListener('resize', updateSize);
+      video.addEventListener('loadedmetadata', updateContentArea);
+      video.addEventListener('resize', updateContentArea);
     }
-    window.addEventListener('resize', updateSize);
-
-    const interval = setInterval(updateSize, 500);
-
+    window.addEventListener('resize', updateContentArea);
+    const interval = setInterval(updateContentArea, 500);
     return () => {
       if (video) {
-        video.removeEventListener('loadedmetadata', updateSize);
-        video.removeEventListener('resize', updateSize);
+        video.removeEventListener('loadedmetadata', updateContentArea);
+        video.removeEventListener('resize', updateContentArea);
       }
-      window.removeEventListener('resize', updateSize);
+      window.removeEventListener('resize', updateContentArea);
       clearInterval(interval);
     };
-  }, [src]);
+  }, [src, updateContentArea]);
 
   // Handle time updates
   useEffect(() => {
@@ -187,16 +206,15 @@ export function VideoPlayer({
           onClick={togglePlay}
         />
 
-        {/* Overlay container */}
+        {/* Overlay — positioned over the actual video content, not the full element box */}
         {overlay && (
-          <div 
-            className="absolute pointer-events-none"
+          <div
+            className="absolute pointer-events-none overflow-hidden"
             style={{
-              width: videoSize.width,
-              height: videoSize.height,
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
+              left: contentArea.offsetX,
+              top: contentArea.offsetY,
+              width: contentArea.width,
+              height: contentArea.height,
             }}
           >
             {overlay}

@@ -7,7 +7,7 @@ import type { PoseFrame } from '@/types';
 
 export function RecordPage() {
   const [showSkeleton, setShowSkeleton] = useState(true);
-  const [overlaySize, setOverlaySize] = useState({ width: 640, height: 480 });
+  const [contentArea, setContentArea] = useState({ width: 640, height: 480, offsetX: 0, offsetY: 0 });
   const [currentPose, setCurrentPose] = useState<PoseFrame | null>(null);
   const [detectorReady, setDetectorReady] = useState(false);
   const [fps, setFps] = useState(0);
@@ -36,13 +36,28 @@ export function RecordPage() {
     poseDetector.initialize().then(() => setDetectorReady(true)).catch(console.error);
   }, []);
 
-  // Sync overlay size to displayed video size
+  // Compute actual video content area (accounts for object-contain letterboxing)
   useEffect(() => {
     const update = () => {
-      if (videoRef.current) {
-        const { width, height } = videoRef.current.getBoundingClientRect();
-        if (width > 0 && height > 0) setOverlaySize({ width, height });
+      const video = videoRef.current;
+      if (!video) return;
+      const rect = video.getBoundingClientRect();
+      const elW = rect.width;
+      const elH = rect.height;
+      if (elW === 0 || elH === 0) return;
+      const intrinsicW = video.videoWidth || elW;
+      const intrinsicH = video.videoHeight || elH;
+      const videoAspect = intrinsicW / intrinsicH;
+      const elementAspect = elW / elH;
+      let contentW: number, contentH: number, offsetX: number, offsetY: number;
+      if (videoAspect > elementAspect) {
+        contentW = elW; contentH = elW / videoAspect;
+        offsetX = 0; offsetY = (elH - contentH) / 2;
+      } else {
+        contentH = elH; contentW = elH * videoAspect;
+        offsetX = (elW - contentW) / 2; offsetY = 0;
       }
+      setContentArea({ width: contentW, height: contentH, offsetX, offsetY });
     };
     const video = videoRef.current;
     video?.addEventListener('loadedmetadata', update);
@@ -162,16 +177,15 @@ export function RecordPage() {
 
         {showSkeleton && currentPose && isStreaming && (
           <div
-            className="absolute pointer-events-none"
+            className="absolute pointer-events-none overflow-hidden"
             style={{
-              width: overlaySize.width,
-              height: overlaySize.height,
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
+              left: contentArea.offsetX,
+              top: contentArea.offsetY,
+              width: contentArea.width,
+              height: contentArea.height,
             }}
           >
-            <SkeletonOverlay pose={currentPose} width={overlaySize.width} height={overlaySize.height} />
+            <SkeletonOverlay pose={currentPose} width={contentArea.width} height={contentArea.height} />
           </div>
         )}
 
