@@ -14,6 +14,12 @@ import { saveAnalysis } from '@/lib/historyStore';
 import type { PoseFrame, SwingAnalysis, GolfClub, AICoachingReport } from '@/types';
 
 type PageState = 'upload' | 'analyzing' | 'results';
+type CameraAngle = 'side' | 'behind';
+
+const CAMERA_ANGLE_OPTIONS: { value: CameraAngle; label: string; description: string }[] = [
+  { value: 'side', label: 'Side-on', description: 'Camera level with your trail shoulder, perpendicular to the target line' },
+  { value: 'behind', label: 'Behind (DTL)', description: 'Camera behind you, looking down the target line' },
+];
 
 const CLUB_OPTIONS: { value: GolfClub; label: string }[] = [
   { value: 'driver', label: 'Driver' },
@@ -35,6 +41,7 @@ const ANALYSIS_FPS = 12; // frames per second of video to analyze
 export function AnalyzePage() {
   const [pageState, setPageState] = useState<PageState>('upload');
   const [selectedClub, setSelectedClub] = useState<GolfClub>('iron_7');
+  const [cameraAngle, setCameraAngle] = useState<CameraAngle>('side');
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [poseFrames, setPoseFrames] = useState<Map<number, PoseFrame>>(new Map());
   const [currentFrame, setCurrentFrame] = useState(0);
@@ -58,7 +65,7 @@ export function AnalyzePage() {
     fetch('/api/coaching', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(swingAnalysis),
+      body: JSON.stringify({ analysis: swingAnalysis, cameraAngle }),
     })
       .then(async (res) => {
         if (!res.ok) {
@@ -206,6 +213,27 @@ export function AnalyzePage() {
         {/* Upload State */}
         {pageState === 'upload' && (
           <div className="max-w-lg mx-auto p-4 mt-4 space-y-6">
+            {/* Camera angle selector */}
+            <div>
+              <label className="block text-[var(--color-text-secondary)] text-sm font-medium mb-2">Camera angle</label>
+              <div className="grid grid-cols-2 gap-2">
+                {CAMERA_ANGLE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setCameraAngle(opt.value)}
+                    className={`p-3 rounded-lg text-left transition-colors border ${
+                      cameraAngle === opt.value
+                        ? 'bg-[var(--color-accent)]/15 border-[var(--color-accent)] text-[var(--color-text)]'
+                        : 'bg-[var(--color-surface-card)] border-transparent text-[var(--color-text-secondary)]'
+                    }`}
+                  >
+                    <p className="text-sm font-medium">{opt.label}</p>
+                    <p className="text-xs text-[var(--color-text-muted)] mt-0.5 leading-tight">{opt.description}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Club selector */}
             <div>
               <label className="block text-[var(--color-text-secondary)] text-sm font-medium mb-2">Club</label>

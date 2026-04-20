@@ -1,51 +1,38 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { SwingAnalysis } from '../src/types';
 
-const SYSTEM_PROMPT = `You are an elite PGA-level golf instructor with 25 years of experience coaching players at every level. You receive structured biomechanical data from video swing analysis software and translate it into clear, actionable coaching.
+const SYSTEM_PROMPT = `You are an elite PGA-level golf instructor. You receive biomechanical swing data and give short, direct feedback.
 
 Your response must be a valid JSON object with exactly these three fields:
-- "narrative": 3-4 paragraphs. Start with what the golfer is doing well. Address the main weakness directly and specifically. Use professional but accessible language — explain any jargon. No generic praise.
-- "focus_areas": array of exactly 3 strings. Each must name a specific issue with a specific measured angle or score (e.g. "Hip rotation at impact: 38° measured vs 45-50° optimal — hips not clearing through the ball"). Ranked by priority.
-- "practice_plan": one paragraph. A single specific drill for the #1 issue. Include reps, sets, or time. Actionable enough to do at the range tomorrow.
 
-Tone: Direct, knowledgeable, encouraging but honest. Treat the golfer as someone who wants real feedback, not flattery.
+- "narrative": 3-4 SHORT sentences total. One sentence on what's working. Two sentences on the single biggest problem — name the specific angle/measurement. No fluff, no lengthy explanations.
+- "focus_areas": array of exactly 3 strings, each under 20 words. Format: "[Issue]: [measured value] vs [optimal value]". Ranked by priority.
+- "practice_plan": 2-3 sentences. One specific drill for priority #1. Include reps or time. Actionable enough to do at the range tomorrow.
 
-Respond ONLY with the JSON object, no markdown, no preamble.`;
+Be blunt and specific. No padding. Respond ONLY with the JSON object.`;
 
-function buildUserMessage(analysis: SwingAnalysis): string {
+function buildUserMessage(analysis: SwingAnalysis, cameraAngle: string): string {
   const lines: string[] = [
+    `Camera angle: ${cameraAngle === 'behind' ? 'Down-the-line (behind golfer)' : 'Face-on / side-on'}`,
     `Club: ${analysis.club}`,
-    `Overall score: ${analysis.overall_score}/100`,
+    `Overall: ${analysis.overall_score}/100`,
     '',
-    '--- Subscores ---',
+    'Subscores:',
   ];
 
-  if (analysis.posture_score) {
-    lines.push(`Posture: ${analysis.posture_score.score}/100 (${analysis.posture_score.grade}) — ${analysis.posture_score.feedback}`);
-    if (analysis.posture_score.details) lines.push(`  Detail: ${analysis.posture_score.details}`);
-  }
-  if (analysis.tempo_score) {
-    lines.push(`Tempo: ${analysis.tempo_score.score}/100 (${analysis.tempo_score.grade}) — ${analysis.tempo_score.feedback}`);
-    if (analysis.tempo_score.details) lines.push(`  Detail: ${analysis.tempo_score.details}`);
-  }
-  if (analysis.rotation_score) {
-    lines.push(`Rotation: ${analysis.rotation_score.score}/100 (${analysis.rotation_score.grade}) — ${analysis.rotation_score.feedback}`);
-    if (analysis.rotation_score.details) lines.push(`  Detail: ${analysis.rotation_score.details}`);
-  }
-  if (analysis.balance_score) {
-    lines.push(`Balance: ${analysis.balance_score.score}/100 (${analysis.balance_score.grade}) — ${analysis.balance_score.feedback}`);
-    if (analysis.balance_score.details) lines.push(`  Detail: ${analysis.balance_score.details}`);
-  }
+  if (analysis.posture_score) lines.push(`  Posture ${analysis.posture_score.score} (${analysis.posture_score.grade}): ${analysis.posture_score.feedback}${analysis.posture_score.details ? ' — ' + analysis.posture_score.details : ''}`);
+  if (analysis.tempo_score) lines.push(`  Tempo ${analysis.tempo_score.score} (${analysis.tempo_score.grade}): ${analysis.tempo_score.feedback}${analysis.tempo_score.details ? ' — ' + analysis.tempo_score.details : ''}`);
+  if (analysis.rotation_score) lines.push(`  Rotation ${analysis.rotation_score.score} (${analysis.rotation_score.grade}): ${analysis.rotation_score.feedback}${analysis.rotation_score.details ? ' — ' + analysis.rotation_score.details : ''}`);
+  if (analysis.balance_score) lines.push(`  Balance ${analysis.balance_score.score} (${analysis.balance_score.grade}): ${analysis.balance_score.feedback}${analysis.balance_score.details ? ' — ' + analysis.balance_score.details : ''}`);
 
   if (analysis.phases.length) {
-    lines.push('', '--- Phase Angles ---');
+    lines.push('', 'Phase angles:');
     for (const phase of analysis.phases) {
-      lines.push(`${phase.phase.toUpperCase()} (score: ${phase.score}):`);
-      const angles = phase.angles;
-      const nonNull = Object.entries(angles)
+      const nonNull = Object.entries(phase.angles)
         .filter(([, v]) => v !== null)
-        .map(([k, v]) => `  ${k}: ${(v as number).toFixed(1)}°`);
-      lines.push(...nonNull);
+        .map(([k, v]) => `${k}=${(v as number).toFixed(1)}°`)
+        .join(', ');
+      if (nonNull) lines.push(`  ${phase.phase} (score ${phase.score}): ${nonNull}`);
     }
   }
 
@@ -53,40 +40,27 @@ function buildUserMessage(analysis: SwingAnalysis): string {
 }
 
 export default async function handler(req: Request): Promise<Response> {
-  if (req.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
-  }
+  if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return Response.json(
-      { error: 'AI coaching unavailable — API key not configured' },
-      { status: 503 },
-    );
-  }
+  if (!apiKey) return Response.json({ error: 'AI coaching unavailable — API key not configured' }, { status: 503 });
 
-  let analysis: SwingAnalysis;
+  let body: { analysis: SwingAnalysis; cameraAngle?: string };
   try {
-    analysis = await req.json();
+    body = await req.json();
   } catch {
     return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
+  const { analysis, cameraAngle = 'side' } = body;
+
   try {
     const client = new Anthropic({ apiKey });
-
     const message = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
-      system: [
-        {
-          type: 'text',
-          text: SYSTEM_PROMPT,
-          // @ts-expect-error — cache_control is valid but not yet in all SDK type defs
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      messages: [{ role: 'user', content: buildUserMessage(analysis) }],
+      max_tokens: 600,
+      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Parameters<typeof client.messages.create>[0]['system'][0]],
+      messages: [{ role: 'user', content: buildUserMessage(analysis, cameraAngle) }],
     });
 
     const text = message.content[0].type === 'text' ? message.content[0].text : '';

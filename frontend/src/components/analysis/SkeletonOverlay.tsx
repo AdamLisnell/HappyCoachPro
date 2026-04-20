@@ -91,8 +91,13 @@ export function SkeletonOverlay({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Clear canvas
-    ctx.clearRect(0, 0, width, height);
+    // Always match canvas drawing surface to its actual rendered size
+    const dw = canvas.offsetWidth || width;
+    const dh = canvas.offsetHeight || height;
+    canvas.width = dw;
+    canvas.height = dh;
+
+    ctx.clearRect(0, 0, dw, dh);
 
     if (!pose || !pose.landmarks || pose.landmarks.length === 0) {
       return;
@@ -100,9 +105,9 @@ export function SkeletonOverlay({
 
     const landmarks = pose.landmarks;
 
-    // Helper to convert normalized coords to pixel coords
+    // Convert normalized coords to the canvas's actual pixel dimensions
     const toPixel = (lm: Landmark): [number, number] => {
-      return [lm.x * width, lm.y * height];
+      return [lm.x * dw, lm.y * dh];
     };
 
     // Helper to check if landmark is visible
@@ -165,9 +170,8 @@ export function SkeletonOverlay({
   return (
     <canvas
       ref={canvasRef}
-      width={width}
-      height={height}
-      className="absolute top-0 left-0 pointer-events-none"
+      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
+      className="pointer-events-none"
     />
   );
 }
