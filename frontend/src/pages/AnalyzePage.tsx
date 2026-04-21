@@ -73,8 +73,12 @@ const ANALYSIS_FPS = 24; // frames per second of video to analyze
 
 export function AnalyzePage() {
   const [pageState, setPageState] = useState<PageState>('upload');
-  const [selectedClub, setSelectedClub] = useState<GolfClub>('iron_7');
-  const [cameraAngle, setCameraAngle] = useState<CameraAngle>('side');
+  const [selectedClub, setSelectedClub] = useState<GolfClub>(
+    () => (localStorage.getItem('hc_default_club') as GolfClub | null) ?? 'iron_7'
+  );
+  const [cameraAngle, setCameraAngle] = useState<CameraAngle>(
+    () => (localStorage.getItem('hc_default_angle') as CameraAngle | null) ?? 'side'
+  );
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [poseFrames, setPoseFrames] = useState<PoseFrame[]>([]);
   const [currentVideoTime, setCurrentVideoTime] = useState(0);

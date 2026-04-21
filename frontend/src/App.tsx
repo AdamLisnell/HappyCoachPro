@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { RecordPage } from './pages/RecordPage';
 import { AnalyzePage } from './pages/AnalyzePage';
 import { HistoryPage } from './pages/HistoryPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { Navigation, NavTab } from './components/ui/Navigation';
 
 function App() {
@@ -13,11 +14,7 @@ function App() {
         {activeTab === 'record' && <RecordPage />}
         {activeTab === 'analyze' && <AnalyzePage />}
         {activeTab === 'history' && <HistoryPage />}
-        {activeTab === 'settings' && (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-[var(--color-text-muted)]">Settings coming soon...</p>
-          </div>
-        )}
+        {activeTab === 'settings' && <SettingsPage />}
       </div>
       <Navigation activeTab={activeTab} onTabChange={setActiveTab} />
     </div>
