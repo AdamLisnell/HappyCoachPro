@@ -14,22 +14,30 @@ import {
   Gauge
 } from 'lucide-react';
 
+interface PhaseMarker {
+  label: string;
+  time: number;
+  color: string;
+}
+
 interface VideoPlayerProps {
   src: string;
   onTimeUpdate?: (currentTime: number, duration: number) => void;
   onFrameChange?: (frameNumber: number) => void;
   overlay?: React.ReactNode;
   fps?: number;
+  phaseMarkers?: PhaseMarker[];
 }
 
 const PLAYBACK_SPEEDS = [0.25, 0.5, 1, 1.5, 2];
 
-export function VideoPlayer({ 
-  src, 
+export function VideoPlayer({
+  src,
   onTimeUpdate,
   onFrameChange,
   overlay,
-  fps = 30
+  fps = 30,
+  phaseMarkers,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -212,6 +220,13 @@ export function VideoPlayer({
     setPlaybackSpeed(newSpeed);
   }, [playbackSpeed]);
 
+  // Jump to a specific time (used by phase marker buttons)
+  const seekToTime = useCallback((time: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = Math.max(0, Math.min(time, video.duration));
+  }, []);
+
   // Seek to position
   const handleSeek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const video = videoRef.current;
@@ -280,22 +295,49 @@ export function VideoPlayer({
           <span className="text-xs text-[var(--color-text-muted)] font-mono w-12">
             {formatTime(currentTime)}
           </span>
-          <input
-            type="range"
-            aria-label="Video timeline"
-            min={0}
-            max={duration || 100}
-            step={0.01}
-            value={currentTime}
-            onChange={handleSeek}
-            className="flex-1 h-2 bg-[var(--color-surface-card)] rounded-full appearance-none cursor-pointer
-                       [&::-webkit-slider-thumb]:appearance-none 
-                       [&::-webkit-slider-thumb]:w-4 
-                       [&::-webkit-slider-thumb]:h-4 
-                       [&::-webkit-slider-thumb]:rounded-full 
-                       [&::-webkit-slider-thumb]:bg-[var(--color-accent)]
-                       [&::-webkit-slider-thumb]:cursor-pointer"
-          />
+
+          {/* Track + phase markers */}
+          <div className="relative flex-1 pt-5">
+            {/* Phase marker triangles */}
+            {duration > 0 && phaseMarkers?.map((m) => (
+              <button
+                key={m.label}
+                onClick={() => seekToTime(m.time)}
+                title={m.label}
+                style={{
+                  left: `${Math.min(100, (m.time / duration) * 100)}%`,
+                  color: m.color,
+                  position: 'absolute',
+                  top: 0,
+                  transform: 'translateX(-50%)',
+                }}
+                className="flex flex-col items-center gap-0.5 hover:scale-125 transition-transform"
+              >
+                <span className="text-[10px] font-bold leading-none" style={{ color: m.color }}>{m.label}</span>
+                <svg width="8" height="6" viewBox="0 0 10 8">
+                  <polygon points="5,8 0,0 10,0" fill="currentColor" />
+                </svg>
+              </button>
+            ))}
+
+            <input
+              type="range"
+              aria-label="Video timeline"
+              min={0}
+              max={duration || 100}
+              step={0.01}
+              value={currentTime}
+              onChange={handleSeek}
+              className="w-full h-2 bg-[var(--color-surface-card)] rounded-full appearance-none cursor-pointer
+                         [&::-webkit-slider-thumb]:appearance-none
+                         [&::-webkit-slider-thumb]:w-4
+                         [&::-webkit-slider-thumb]:h-4
+                         [&::-webkit-slider-thumb]:rounded-full
+                         [&::-webkit-slider-thumb]:bg-[var(--color-accent)]
+                         [&::-webkit-slider-thumb]:cursor-pointer"
+            />
+          </div>
+
           <span className="text-xs text-[var(--color-text-muted)] font-mono w-12 text-right">
             {formatTime(duration)}
           </span>

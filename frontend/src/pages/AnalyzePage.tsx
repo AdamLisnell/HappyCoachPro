@@ -3,15 +3,32 @@ import { ArrowLeft, Loader2 } from 'lucide-react';
 import { VideoUpload } from '@/components/video/VideoUpload';
 import { VideoPlayer } from '@/components/video/VideoPlayer';
 import { SkeletonOverlay } from '@/components/analysis/SkeletonOverlay';
+import { SwingPathOverlay } from '@/components/analysis/SwingPathOverlay';
+import { ReferenceLineOverlay } from '@/components/analysis/ReferenceLineOverlay';
 import { OverallScoreBadge } from '@/components/analysis/OverallScoreBadge';
 import { SwingScoreCard } from '@/components/analysis/SwingScoreCard';
-import { PhaseBreakdown } from '@/components/analysis/PhaseBreakdown';
+import { PhaseBreakdown, PHASE_LABELS } from '@/components/analysis/PhaseBreakdown';
 import { CoachingTipsList } from '@/components/analysis/CoachingTipsList';
 import { CoachReport } from '@/components/analysis/CoachReport';
 import * as poseDetector from '@/lib/poseDetector';
 import { analyzeFrames } from '@/lib/swingAnalyzer';
 import { saveAnalysis } from '@/lib/historyStore';
 import type { PoseFrame, SwingAnalysis, GolfClub, AICoachingReport } from '@/types';
+
+function TogglePill({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors border ${
+        active
+          ? 'bg-[var(--color-accent)] text-[var(--color-primary-dark)] border-[var(--color-accent)]'
+          : 'bg-transparent text-[var(--color-text-muted)] border-[var(--color-primary-light)]'
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
 
 // Bidirectional EMA to smooth out per-frame MediaPipe jitter.
 // alpha=1 → no smoothing; alpha≈0.45 → balanced smooth/lag trade-off.
@@ -89,6 +106,8 @@ export function AnalyzePage() {
   const [coachLoading, setCoachLoading] = useState(false);
   const [coachError, setCoachError] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [showSwingPath, setShowSwingPath] = useState(false);
+  const [showReferenceLines, setShowReferenceLines] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cancelRef = useRef(false);
@@ -251,6 +270,53 @@ export function AnalyzePage() {
     };
   }, [poseFrames, currentVideoTime]);
 
+  // Phase markers for the video timeline
+  const phaseMarkers = useMemo(() => {
+    if (!swingAnalysis || !poseFrames.length) return [];
+    const kf = swingAnalysis.key_frames;
+    return (
+      [
+        { label: 'A', color: '#64B5F6', key: 'address' },
+        { label: 'T', color: '#FF9800', key: 'top' },
+        { label: 'I', color: '#F44336', key: 'impact' },
+        { label: 'F', color: '#66BB6A', key: 'finish' },
+      ] as const
+    )
+      .filter(({ key }) => kf[key] != null)
+      .map(({ label, color, key }) => ({
+        label,
+        color,
+        time: (poseFrames[kf[key]]?.timestamp_ms ?? (kf[key] * 1000) / swingAnalysis.fps) / 1000,
+      }));
+  }, [swingAnalysis, poseFrames]);
+
+  // Current phase badge label
+  const currentPhaseName = useMemo((): string | null => {
+    if (!swingAnalysis?.phases.length) return null;
+    const ms = currentVideoTime * 1000;
+    let best = null as typeof swingAnalysis.phases[0] | null;
+    let bestDist = Infinity;
+    for (const p of swingAnalysis.phases) {
+      const dist = Math.abs(p.timestamp_ms - ms);
+      if (dist < bestDist && dist < 600) { best = p; bestDist = dist; }
+    }
+    return best ? PHASE_LABELS[best.phase] ?? best.phase : null;
+  }, [swingAnalysis, currentVideoTime]);
+
+  // Key angle callouts from the impact frame
+  const impactAngles = useMemo(() => {
+    if (!swingAnalysis) return [];
+    const impact = swingAnalysis.phases.find((p) => p.phase === 'impact');
+    if (!impact) return [];
+    const { spine_angle, hip_rotation, shoulder_rotation, x_factor } = impact.angles;
+    return [
+      spine_angle      != null ? { label: 'Spine',     value: spine_angle.toFixed(0) }      : null,
+      hip_rotation     != null ? { label: 'Hips',      value: hip_rotation.toFixed(0) }     : null,
+      shoulder_rotation != null ? { label: 'Shoulders', value: shoulder_rotation.toFixed(0) } : null,
+      x_factor         != null ? { label: 'X-Factor',  value: x_factor.toFixed(0) }         : null,
+    ].filter(Boolean) as { label: string; value: string }[];
+  }, [swingAnalysis]);
+
   const headerSubtitle = {
     upload: 'Upload a video',
     analyzing: `${analyzeProgress}% complete`,
@@ -365,21 +431,59 @@ export function AnalyzePage() {
 
         {/* Results State */}
         {pageState === 'results' && swingAnalysis && videoUrl && (
-          <div className="max-w-2xl mx-auto p-4 space-y-6">
-            {/* Video with skeleton overlay */}
+          <div className="max-w-2xl mx-auto p-4 space-y-4">
+
+            {/* Video with overlays */}
             <VideoPlayer
               src={videoUrl}
               onTimeUpdate={(t) => setCurrentVideoTime(t)}
               fps={ANALYSIS_FPS}
+              phaseMarkers={phaseMarkers}
               overlay={
-                currentPose ? (
+                <>
                   <SkeletonOverlay pose={currentPose} width={videoSize.width} height={videoSize.height} />
-                ) : null
+                  {showReferenceLines && (
+                    <ReferenceLineOverlay pose={currentPose} width={videoSize.width} height={videoSize.height} />
+                  )}
+                  {showSwingPath && (
+                    <SwingPathOverlay frames={poseFrames} keyFrames={swingAnalysis.key_frames} />
+                  )}
+                  {currentPhaseName && (
+                    <div className="absolute top-3 left-3 pointer-events-none">
+                      <span className="bg-black/60 text-white text-xs font-bold uppercase tracking-widest
+                                       px-3 py-1.5 rounded-full border border-white/20">
+                        {currentPhaseName}
+                      </span>
+                    </div>
+                  )}
+                </>
               }
             />
 
-            {/* Overall score */}
-            <OverallScoreBadge score={swingAnalysis.overall_score} summary={swingAnalysis.summary} />
+            {/* Overlay toggle pills */}
+            <div className="flex gap-2 justify-end">
+              <TogglePill active={showSwingPath} onClick={() => setShowSwingPath((v) => !v)} label="Swing Path" />
+              <TogglePill active={showReferenceLines} onClick={() => setShowReferenceLines((v) => !v)} label="Ref Lines" />
+            </div>
+
+            {/* Score hero + impact angles */}
+            <div className="bg-[var(--color-surface-card)] rounded-2xl p-4 flex items-center gap-4">
+              <div className="flex-shrink-0">
+                <OverallScoreBadge score={swingAnalysis.overall_score} summary={null} compact />
+              </div>
+              {impactAngles.length > 0 && (
+                <div className="flex-1 grid grid-cols-2 gap-2">
+                  {impactAngles.map(({ label, value }) => (
+                    <div key={label} className="bg-[var(--color-surface)] rounded-xl p-2 text-center">
+                      <div className="text-xl font-black text-[var(--color-accent)]">{value}°</div>
+                      <div className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wide">{label}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* Summary text below the hero card */}
+            <p className="text-[var(--color-text-muted)] text-sm text-center px-2">{swingAnalysis.summary}</p>
 
             {/* Sub-scores */}
             <div className="grid grid-cols-2 gap-3">
