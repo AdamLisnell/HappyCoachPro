@@ -85,7 +85,8 @@ export default async function handler(req: Request): Promise<Response> {
       messages: [{ role: 'user', content: buildUserMessage(analysis, cameraAngle) }],
     });
 
-    const text = message.content[0].type === 'text' ? message.content[0].text : '';
+    const raw = message.content[0].type === 'text' ? message.content[0].text : '';
+    const text = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
     const parsed = JSON.parse(text);
 
     return Response.json({

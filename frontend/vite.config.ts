@@ -68,7 +68,8 @@ No filler phrases. JSON only.`
               }),
             })
             const apiData = await apiRes.json() as { content?: Array<{ type: string; text: string }> }
-            const text = apiData.content?.[0]?.type === 'text' ? apiData.content[0].text : '{}'
+            const raw = apiData.content?.[0]?.type === 'text' ? apiData.content[0].text : '{}'
+            const text = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim()
             const result = JSON.parse(text)
             res.setHeader('Content-Type', 'application/json')
             res.statusCode = 200
