@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
@@ -6,7 +6,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 import type { Plugin } from 'vite'
 
 // Local dev handler for /api/coaching — mirrors the Vercel edge function logic
-function localApiPlugin(): Plugin {
+function localApiPlugin(apiKey: string | undefined): Plugin {
   return {
     name: 'local-api',
     configureServer(server) {
@@ -14,7 +14,6 @@ function localApiPlugin(): Plugin {
         if (req.method !== 'POST') {
           res.statusCode = 405; res.end('Method not allowed'); return
         }
-        const apiKey = process.env.ANTHROPIC_API_KEY
         if (!apiKey) {
           res.setHeader('Content-Type', 'application/json')
           res.statusCode = 503
@@ -86,11 +85,15 @@ No filler phrases. JSON only.`
   }
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  // Load .env so the server-side plugin can access ANTHROPIC_API_KEY
+  const env = loadEnv(mode, process.cwd(), '')
+
+  return defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    localApiPlugin(),
+    localApiPlugin(env.ANTHROPIC_API_KEY),
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
@@ -131,4 +134,5 @@ export default defineConfig({
     port: 3000,
     host: true,
   },
+  })
 })
