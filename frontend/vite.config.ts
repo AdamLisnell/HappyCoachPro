@@ -3,11 +3,94 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import { VitePWA } from 'vite-plugin-pwa'
+import type { Plugin } from 'vite'
+
+// Local dev handler for /api/coaching — mirrors the Vercel edge function logic
+function localApiPlugin(): Plugin {
+  return {
+    name: 'local-api',
+    configureServer(server) {
+      server.middlewares.use('/api/coaching', async (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405; res.end('Method not allowed'); return
+        }
+        const apiKey = process.env.ANTHROPIC_API_KEY
+        if (!apiKey) {
+          res.setHeader('Content-Type', 'application/json')
+          res.statusCode = 503
+          res.end(JSON.stringify({ error: 'Create frontend/.env with ANTHROPIC_API_KEY=sk-ant-... to enable coaching locally' }))
+          return
+        }
+        let body = ''
+        req.on('data', (c: Buffer) => { body += c.toString() })
+        req.on('end', async () => {
+          try {
+            const parsed = JSON.parse(body)
+            const { analysis, cameraAngle = 'side' } = parsed
+
+            // Build user message matching the edge function
+            const lines: string[] = [
+              `Camera: ${cameraAngle === 'behind' ? 'Down-the-line' : 'Face-on / side-on'}`,
+              `Club: ${analysis.club}`, `Overall: ${analysis.overall_score}/100`, '', 'Subscores:',
+            ]
+            const fmt = (s: { score: number; grade: string; feedback: string; details?: string | null }) =>
+              `  ${s.score}/100 (${s.grade}): ${s.feedback}${s.details ? ' — ' + s.details : ''}`
+            if (analysis.posture_score)  lines.push('  Posture'  + fmt(analysis.posture_score))
+            if (analysis.tempo_score)    lines.push('  Tempo'    + fmt(analysis.tempo_score))
+            if (analysis.rotation_score) lines.push('  Rotation' + fmt(analysis.rotation_score))
+            if (analysis.balance_score)  lines.push('  Balance'  + fmt(analysis.balance_score))
+            if (analysis.phases?.length) {
+              lines.push('', 'Phase angles:')
+              for (const p of analysis.phases) {
+                const angles = Object.entries(p.angles).filter(([,v]) => v !== null)
+                  .map(([k,v]) => `${k}=${(v as number).toFixed(1)}°`).join(', ')
+                if (angles) lines.push(`  ${p.phase} (score ${p.score}/100): ${angles}`)
+              }
+            }
+
+            const SYSTEM = `You are an elite PGA-level golf instructor. Respond with a valid JSON object with exactly:
+"narrative": 3-4 sentences on biggest flaw (name angle+measurement) then what's working.
+"focus_areas": array of 3 strings: "[Joint]: [measured]° vs ideal [range]. [Verdict]."
+"practice_plan": 4-6 sentences, 2 named drills with reps and feel cues.
+No filler phrases. JSON only.`
+
+            const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify({
+                model: 'claude-sonnet-4-6',
+                max_tokens: 900,
+                system: SYSTEM,
+                messages: [{ role: 'user', content: lines.join('\n') }],
+              }),
+            })
+            const apiData = await apiRes.json() as { content?: Array<{ type: string; text: string }> }
+            const text = apiData.content?.[0]?.type === 'text' ? apiData.content[0].text : '{}'
+            const result = JSON.parse(text)
+            res.setHeader('Content-Type', 'application/json')
+            res.statusCode = 200
+            res.end(JSON.stringify({ ...result, generated_at: new Date().toISOString() }))
+          } catch (err) {
+            console.error('[local-api]', err)
+            res.setHeader('Content-Type', 'application/json')
+            res.statusCode = 500
+            res.end(JSON.stringify({ error: 'Local coaching handler failed' }))
+          }
+        })
+      })
+    },
+  }
+}
 
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    localApiPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
@@ -27,7 +110,6 @@ export default defineConfig({
       workbox: {
         runtimeCaching: [
           { urlPattern: /^\/api\//, handler: 'NetworkOnly' },
-          // Cache MediaPipe model and wasm from CDN
           {
             urlPattern: /^https:\/\/storage\.googleapis\.com\/mediapipe-models\//,
             handler: 'CacheFirst',
@@ -47,10 +129,6 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    host: true, // expose on LAN for phone testing
-    proxy: {
-      '/api': { target: 'http://localhost:8000', changeOrigin: true },
-      '/ws': { target: 'ws://localhost:8000', ws: true },
-    },
+    host: true,
   },
 })

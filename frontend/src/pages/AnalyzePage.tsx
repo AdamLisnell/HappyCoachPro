@@ -5,8 +5,6 @@ import { VideoPlayer } from '@/components/video/VideoPlayer';
 import { SkeletonOverlay } from '@/components/analysis/SkeletonOverlay';
 import { SwingPathOverlay } from '@/components/analysis/SwingPathOverlay';
 import { ReferenceLineOverlay } from '@/components/analysis/ReferenceLineOverlay';
-import { OverallScoreBadge } from '@/components/analysis/OverallScoreBadge';
-import { SwingScoreCard } from '@/components/analysis/SwingScoreCard';
 import { PhaseBreakdown, PHASE_LABELS } from '@/components/analysis/PhaseBreakdown';
 import { CoachingTipsList } from '@/components/analysis/CoachingTipsList';
 import { CoachReport } from '@/components/analysis/CoachReport';
@@ -270,6 +268,13 @@ export function AnalyzePage() {
     };
   }, [poseFrames, currentVideoTime]);
 
+  // Fixed pose at address frame — used for static reference lines
+  const addressPose = useMemo((): PoseFrame | null => {
+    if (!poseFrames.length || !swingAnalysis) return null;
+    const idx = swingAnalysis.key_frames.address ?? 0;
+    return poseFrames[Math.min(idx, poseFrames.length - 1)] ?? null;
+  }, [poseFrames, swingAnalysis]);
+
   // Phase markers for the video timeline
   const phaseMarkers = useMemo(() => {
     if (!swingAnalysis || !poseFrames.length) return [];
@@ -431,9 +436,9 @@ export function AnalyzePage() {
 
         {/* Results State */}
         {pageState === 'results' && swingAnalysis && videoUrl && (
-          <div className="max-w-2xl mx-auto p-4 space-y-4">
+          <div className="max-w-2xl mx-auto space-y-0">
 
-            {/* Video with overlays */}
+            {/* Video — full bleed, no padding */}
             <VideoPlayer
               src={videoUrl}
               onTimeUpdate={(t) => setCurrentVideoTime(t)}
@@ -441,17 +446,30 @@ export function AnalyzePage() {
               phaseMarkers={phaseMarkers}
               overlay={
                 <>
-                  <SkeletonOverlay pose={currentPose} width={videoSize.width} height={videoSize.height} />
+                  {/* Skeleton — dimmed when swing path is active */}
+                  <SkeletonOverlay
+                    pose={currentPose}
+                    width={videoSize.width}
+                    height={videoSize.height}
+                    dimmed={showSwingPath}
+                  />
+                  {/* Reference lines fixed at address frame */}
                   {showReferenceLines && (
-                    <ReferenceLineOverlay pose={currentPose} width={videoSize.width} height={videoSize.height} />
+                    <ReferenceLineOverlay pose={addressPose} width={videoSize.width} height={videoSize.height} />
                   )}
+                  {/* Swing path builds as video plays */}
                   {showSwingPath && (
-                    <SwingPathOverlay frames={poseFrames} keyFrames={swingAnalysis.key_frames} />
+                    <SwingPathOverlay
+                      frames={poseFrames}
+                      keyFrames={swingAnalysis.key_frames}
+                      currentTimeMs={currentVideoTime * 1000}
+                    />
                   )}
+                  {/* Phase name badge */}
                   {currentPhaseName && (
                     <div className="absolute top-3 left-3 pointer-events-none">
-                      <span className="bg-black/60 text-white text-xs font-bold uppercase tracking-widest
-                                       px-3 py-1.5 rounded-full border border-white/20">
+                      <span className="bg-black/55 text-white text-[11px] font-bold uppercase tracking-widest
+                                       px-2.5 py-1 rounded-full border border-white/15">
                         {currentPhaseName}
                       </span>
                     </div>
@@ -460,55 +478,86 @@ export function AnalyzePage() {
               }
             />
 
-            {/* Overlay toggle pills */}
-            <div className="flex gap-2 justify-end">
-              <TogglePill active={showSwingPath} onClick={() => setShowSwingPath((v) => !v)} label="Swing Path" />
-              <TogglePill active={showReferenceLines} onClick={() => setShowReferenceLines((v) => !v)} label="Ref Lines" />
+            {/* Overlay toggles + score strip — sits right below video */}
+            <div className="bg-[var(--color-primary)] px-4 py-3 flex items-center justify-between border-t border-[var(--color-primary-light)]">
+              {/* Score summary pill */}
+              <div className="flex items-center gap-3">
+                <span className={`text-3xl font-black ${
+                  swingAnalysis.overall_score >= 80 ? 'text-green-400'
+                  : swingAnalysis.overall_score >= 60 ? 'text-yellow-400'
+                  : 'text-orange-400'}`}>
+                  {swingAnalysis.overall_score}
+                </span>
+                <div>
+                  <div className="text-xs text-[var(--color-text-muted)] uppercase tracking-widest">Score</div>
+                  <div className="text-xs text-[var(--color-text-secondary)] capitalize">
+                    {swingAnalysis.overall_score >= 80 ? 'Great swing' : swingAnalysis.overall_score >= 60 ? 'Room to improve' : 'Needs work'}
+                  </div>
+                </div>
+              </div>
+              {/* Toggle pills */}
+              <div className="flex gap-2">
+                <TogglePill active={showSwingPath} onClick={() => setShowSwingPath((v) => !v)} label="Path" />
+                <TogglePill active={showReferenceLines} onClick={() => setShowReferenceLines((v) => !v)} label="Lines" />
+              </div>
             </div>
 
-            {/* Score hero + impact angles */}
-            <div className="bg-[var(--color-surface-card)] rounded-2xl p-4 flex items-center gap-4">
-              <div className="flex-shrink-0">
-                <OverallScoreBadge score={swingAnalysis.overall_score} summary={null} compact />
-              </div>
+            {/* Main data area */}
+            <div className="p-4 space-y-5">
+
+              {/* Impact key angles */}
               {impactAngles.length > 0 && (
-                <div className="flex-1 grid grid-cols-2 gap-2">
-                  {impactAngles.map(({ label, value }) => (
-                    <div key={label} className="bg-[var(--color-surface)] rounded-xl p-2 text-center">
-                      <div className="text-xl font-black text-[var(--color-accent)]">{value}°</div>
-                      <div className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wide">{label}</div>
-                    </div>
-                  ))}
+                <div>
+                  <p className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-widest mb-2">At Impact</p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {impactAngles.map(({ label, value }) => (
+                      <div key={label} className="bg-[var(--color-surface-card)] rounded-xl p-3 text-center">
+                        <div className="text-lg font-black text-[var(--color-accent)]">{value}°</div>
+                        <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide mt-0.5">{label}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
+
+              {/* Sub-scores 2×2 */}
+              <div>
+                <p className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-widest mb-2">Scores</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    swingAnalysis.posture_score  && { label: 'Posture',   s: swingAnalysis.posture_score },
+                    swingAnalysis.tempo_score    && { label: 'Tempo',     s: swingAnalysis.tempo_score },
+                    swingAnalysis.rotation_score && { label: 'Rotation',  s: swingAnalysis.rotation_score },
+                    swingAnalysis.balance_score  && { label: 'Balance',   s: swingAnalysis.balance_score },
+                  ].filter(Boolean).map((item) => {
+                    const { label, s } = item as { label: string; s: typeof swingAnalysis.posture_score };
+                    if (!s) return null;
+                    const col = s.score >= 80 ? 'text-green-400 border-green-400/30'
+                      : s.score >= 60 ? 'text-yellow-400 border-yellow-400/30'
+                      : 'text-orange-400 border-orange-400/30';
+                    return (
+                      <div key={label} className={`bg-[var(--color-surface-card)] rounded-xl p-3 border-l-2 ${col.split(' ')[1]}`}>
+                        <div className="flex items-baseline justify-between mb-1">
+                          <span className="text-xs text-[var(--color-text-muted)] uppercase tracking-wide">{label}</span>
+                          <span className={`text-xl font-black ${col.split(' ')[0]}`}>{s.score}</span>
+                        </div>
+                        <p className="text-xs text-[var(--color-text-muted)] leading-snug line-clamp-2">{s.feedback}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Phase breakdown */}
+              <PhaseBreakdown phases={swingAnalysis.phases} />
+
+              {/* AI Coach report */}
+              <CoachReport report={coachReport} loading={coachLoading} error={coachError} />
+
+              {/* Rule-based tips */}
+              <CoachingTipsList tips={swingAnalysis.tips} />
+
             </div>
-            {/* Summary text below the hero card */}
-            <p className="text-[var(--color-text-muted)] text-sm text-center px-2">{swingAnalysis.summary}</p>
-
-            {/* Sub-scores */}
-            <div className="grid grid-cols-2 gap-3">
-              {swingAnalysis.posture_score && (
-                <SwingScoreCard label="Posture" swingScore={swingAnalysis.posture_score} />
-              )}
-              {swingAnalysis.tempo_score && (
-                <SwingScoreCard label="Tempo" swingScore={swingAnalysis.tempo_score} />
-              )}
-              {swingAnalysis.rotation_score && (
-                <SwingScoreCard label="Rotation" swingScore={swingAnalysis.rotation_score} />
-              )}
-              {swingAnalysis.balance_score && (
-                <SwingScoreCard label="Balance" swingScore={swingAnalysis.balance_score} />
-              )}
-            </div>
-
-            {/* Phase breakdown */}
-            <PhaseBreakdown phases={swingAnalysis.phases} />
-
-            {/* AI Coach report */}
-            <CoachReport report={coachReport} loading={coachLoading} error={coachError} />
-
-            {/* Rule-based tips */}
-            <CoachingTipsList tips={swingAnalysis.tips} />
           </div>
         )}
       </div>
