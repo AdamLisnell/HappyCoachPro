@@ -43,6 +43,7 @@ export function useCamera(options: UseCameraOptions = {}): UseCameraReturn {
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const recorderMimeTypeRef = useRef<string>('video/webm');
 
   // Start camera
   const startCamera = useCallback(async () => {
@@ -108,9 +109,23 @@ export function useCamera(options: UseCameraOptions = {}): UseCameraReturn {
     try {
       chunksRef.current = [];
 
-      const mediaRecorder = new MediaRecorder(streamRef.current, {
-        mimeType: 'video/webm;codecs=vp9',
+      // Pick a mimeType the current browser supports (iOS Safari prefers mp4)
+      const candidates = [
+        'video/mp4;codecs=h264',
+        'video/mp4',
+        'video/webm;codecs=vp9',
+        'video/webm;codecs=vp8',
+        'video/webm',
+      ];
+      const mimeType = candidates.find((m) => {
+        try { return typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m); }
+        catch { return false; }
       });
+
+      const mediaRecorder = mimeType
+        ? new MediaRecorder(streamRef.current, { mimeType })
+        : new MediaRecorder(streamRef.current);
+      recorderMimeTypeRef.current = mediaRecorder.mimeType || mimeType || 'video/webm';
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -139,9 +154,9 @@ export function useCamera(options: UseCameraOptions = {}): UseCameraReturn {
       const mediaRecorder = mediaRecorderRef.current;
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+        const blob = new Blob(chunksRef.current, { type: recorderMimeTypeRef.current });
         chunksRef.current = [];
-        console.log('⏹️ Recording stopped, blob size:', blob.size);
+        console.log('⏹️ Recording stopped, blob size:', blob.size, 'type:', blob.type);
         resolve(blob);
       };
 

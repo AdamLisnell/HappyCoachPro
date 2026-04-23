@@ -5,7 +5,11 @@ import { SkeletonOverlay } from '@/components/analysis/SkeletonOverlay';
 import * as poseDetector from '@/lib/poseDetector';
 import type { PoseFrame } from '@/types';
 
-export function RecordPage() {
+interface RecordPageProps {
+  onRecordComplete?: (blob: Blob) => void;
+}
+
+export function RecordPage({ onRecordComplete }: RecordPageProps = {}) {
   const [showSkeleton, setShowSkeleton] = useState(true);
   const [contentArea, setContentArea] = useState({ width: 640, height: 480, offsetX: 0, offsetY: 0 });
   const [currentPose, setCurrentPose] = useState<PoseFrame | null>(null);
@@ -125,18 +129,23 @@ export function RecordPage() {
     if (isRecording) {
       const blob = await stopRecording();
       if (blob) {
-        // Download the recorded video so user can upload to Analyze tab
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `swing-${Date.now()}.webm`;
-        a.click();
-        URL.revokeObjectURL(url);
+        if (onRecordComplete) {
+          // Hand the blob to AnalyzePage (seamless on mobile — no file re-pick)
+          onRecordComplete(blob);
+        } else {
+          // Fallback: download so user can upload manually
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `swing-${Date.now()}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
       }
     } else {
       startRecording();
     }
-  }, [isRecording, startRecording, stopRecording]);
+  }, [isRecording, startRecording, stopRecording, onRecordComplete]);
 
   const error = cameraError;
   const active = isStreaming && detectorReady && showSkeleton;
@@ -282,7 +291,7 @@ export function RecordPage() {
           {!isStreaming
             ? 'Tap to start camera'
             : isRecording
-            ? 'Recording… tap to stop and download'
+            ? 'Recording… tap to stop & analyze'
             : 'Position yourself and tap record'}
         </p>
       </div>

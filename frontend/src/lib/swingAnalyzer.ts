@@ -315,6 +315,15 @@ export function analyzeFrames(
     if (idx !== null) keyFrames[phase] = idx;
   }
 
+  const backswingFrames = (phases.top ?? 0) - (phases.address ?? 0);
+  const downswingFrames = (phases.impact ?? 0) - (phases.top ?? 0);
+  const tempoRatio = downswingFrames > 0 ? backswingFrames / downswingFrames : undefined;
+
+  const topAnalysis = phaseAnalyses.find((pa) => pa.phase === 'top');
+  const sr = topAnalysis?.angles.shoulder_rotation ?? null;
+  const hr = topAnalysis?.angles.hip_rotation ?? null;
+  const xFactorTop = sr !== null && hr !== null ? Math.abs(sr - hr) : undefined;
+
   return {
     id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
@@ -331,5 +340,7 @@ export function analyzeFrames(
     tips,
     summary,
     key_frames: keyFrames,
+    tempo_ratio: tempoRatio,
+    x_factor_top: xFactorTop,
   };
 }

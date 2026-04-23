@@ -13,6 +13,33 @@ import { analyzeFrames } from '@/lib/swingAnalyzer';
 import { saveAnalysis } from '@/lib/historyStore';
 import type { PoseFrame, SwingAnalysis, GolfClub, AICoachingReport } from '@/types';
 
+function ScoreGauge({ score }: { score: number }) {
+  const size = 88;
+  const stroke = 7;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, score)) / 100;
+  const grade = score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : score >= 60 ? 'D' : 'F';
+  const ring = score >= 80 ? '#4ade80' : score >= 60 ? '#E8C547' : '#fb923c';
+  return (
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} fill="none" />
+        <circle
+          cx={size / 2} cy={size / 2} r={r}
+          stroke={ring} strokeWidth={stroke} fill="none"
+          strokeDasharray={c} strokeDashoffset={c * (1 - pct)}
+          strokeLinecap="round"
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="font-display text-3xl font-black leading-none" style={{ color: ring }}>{grade}</span>
+        <span className="text-[10px] font-mono text-[var(--color-text-muted)] mt-0.5">{score}/100</span>
+      </div>
+    </div>
+  );
+}
+
 function TogglePill({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
   return (
     <button
@@ -86,7 +113,12 @@ const CLUB_OPTIONS: { value: GolfClub; label: string }[] = [
 
 const ANALYSIS_FPS = 24; // frames per second of video to analyze
 
-export function AnalyzePage() {
+interface AnalyzePageProps {
+  initialBlob?: Blob | null;
+  onConsumed?: () => void;
+}
+
+export function AnalyzePage({ initialBlob, onConsumed }: AnalyzePageProps = {}) {
   const [pageState, setPageState] = useState<PageState>('upload');
   const [selectedClub, setSelectedClub] = useState<GolfClub>(
     () => (localStorage.getItem('hc_default_club') as GolfClub | null) ?? 'iron_7'
@@ -106,6 +138,7 @@ export function AnalyzePage() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [showSwingPath, setShowSwingPath] = useState(false);
   const [showReferenceLines, setShowReferenceLines] = useState(false);
+  const [showAngles, setShowAngles] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cancelRef = useRef(false);
@@ -215,6 +248,17 @@ export function AnalyzePage() {
     }
   }, [selectedClub]);
 
+  // Consume a blob handed over from RecordPage (mobile-friendly handoff, no download)
+  useEffect(() => {
+    if (!initialBlob) return;
+    const ext = initialBlob.type.includes('mp4') ? 'mp4' : 'webm';
+    const file = new File([initialBlob], `swing-${Date.now()}.${ext}`, { type: initialBlob.type || 'video/mp4' });
+    const url = URL.createObjectURL(initialBlob);
+    handleVideoSelected(file, url);
+    onConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialBlob]);
+
   const handleBack = useCallback(() => {
     cancelRef.current = true;
     if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -295,8 +339,8 @@ export function AnalyzePage() {
       }));
   }, [swingAnalysis, poseFrames]);
 
-  // Current phase badge label
-  const currentPhaseName = useMemo((): string | null => {
+  // Current phase (used for badge label, skeleton angles + highlight)
+  const currentPhase = useMemo(() => {
     if (!swingAnalysis?.phases.length) return null;
     const ms = currentVideoTime * 1000;
     let best = null as typeof swingAnalysis.phases[0] | null;
@@ -305,8 +349,13 @@ export function AnalyzePage() {
       const dist = Math.abs(p.timestamp_ms - ms);
       if (dist < bestDist && dist < 600) { best = p; bestDist = dist; }
     }
-    return best ? PHASE_LABELS[best.phase] ?? best.phase : null;
+    return best;
   }, [swingAnalysis, currentVideoTime]);
+
+  const currentPhaseName = useMemo((): string | null => {
+    if (!currentPhase) return null;
+    return PHASE_LABELS[currentPhase.phase] ?? currentPhase.phase;
+  }, [currentPhase]);
 
   // Key angle callouts from the impact frame
   const impactAngles = useMemo(() => {
@@ -410,27 +459,44 @@ export function AnalyzePage() {
               </div>
             )}
 
-            <p className="text-[var(--color-text-muted)] text-sm text-center">
-              Best results with a side-view recording in good lighting.
-            </p>
+            <div>
+              <p className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-widest mb-2">For best results</p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { t: 'Side-on', d: 'Camera perpendicular to target line' },
+                  { t: 'Full frame', d: 'Head to club, full swing visible' },
+                  { t: 'Good light', d: 'Bright, no backlight behind you' },
+                ].map((c) => (
+                  <div key={c.t} className="bg-[var(--color-surface-card)] rounded-lg p-3 border border-[var(--color-primary-light)]/40">
+                    <p className="text-[var(--color-accent)] text-xs font-semibold">{c.t}</p>
+                    <p className="text-[10px] text-[var(--color-text-muted)] leading-tight mt-1">{c.d}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
         {/* Analyzing State */}
         {pageState === 'analyzing' && (
-          <div className="flex flex-col items-center justify-center h-full gap-6 p-8 mt-12">
-            <Loader2 className="w-16 h-16 text-[var(--color-accent)] animate-spin" />
-            <div className="text-center">
-              <p className="text-[var(--color-text)] font-medium">Analyzing your swing…</p>
-              <p className="text-[var(--color-text-muted)] text-sm mt-1">Running pose detection in your browser</p>
+          <div className="max-w-2xl mx-auto p-4 space-y-4">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-6 h-6 text-[var(--color-accent)] animate-spin flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-[var(--color-text)] font-medium text-sm">Analyzing swing · {poseFrames.length} frames</p>
+                <div className="w-full h-1.5 bg-[var(--color-surface-card)] rounded-full overflow-hidden mt-1.5">
+                  <div className="h-full bg-[var(--color-accent-bright)] transition-all duration-300" style={{ width: `${analyzeProgress}%` }} />
+                </div>
+              </div>
+              <span className="font-mono text-[var(--color-accent-bright)] text-sm">{analyzeProgress}%</span>
             </div>
-            <div className="w-64 h-2 bg-[var(--color-surface-card)] rounded-full overflow-hidden">
-              <div
-                className="h-full bg-[var(--color-accent)] transition-all duration-300"
-                style={{ width: `${analyzeProgress}%` }}
-              />
+            {/* Shimmer preview of final layout */}
+            <div className="h-48 rounded-xl shimmer" />
+            <div className="h-16 rounded-xl shimmer" />
+            <div className="grid grid-cols-4 gap-2">
+              {[0, 1, 2, 3].map((i) => <div key={i} className="h-16 rounded-xl shimmer" />)}
             </div>
-            <p className="text-[var(--color-text-muted)] text-sm">{poseFrames.length} frames processed</p>
+            <div className="h-32 rounded-xl shimmer" />
           </div>
         )}
 
@@ -452,6 +518,11 @@ export function AnalyzePage() {
                     width={videoSize.width}
                     height={videoSize.height}
                     dimmed={showSwingPath}
+                    showAngles={showAngles}
+                    phaseAngles={currentPhase?.angles ?? null}
+                    highlightPhase={currentPhase?.phase ?? null}
+                    showClubShaft={showReferenceLines}
+                    showGroundLine={showReferenceLines}
                   />
                   {/* Reference lines fixed at address frame */}
                   {showReferenceLines && (
@@ -480,25 +551,27 @@ export function AnalyzePage() {
 
             {/* Overlay toggles + score strip — sits right below video */}
             <div className="bg-[var(--color-primary)] px-4 py-3 flex items-center justify-between border-t border-[var(--color-primary-light)]">
-              {/* Score summary pill */}
+              {/* Score gauge */}
               <div className="flex items-center gap-3">
-                <span className={`text-3xl font-black ${
-                  swingAnalysis.overall_score >= 80 ? 'text-green-400'
-                  : swingAnalysis.overall_score >= 60 ? 'text-yellow-400'
-                  : 'text-orange-400'}`}>
-                  {swingAnalysis.overall_score}
-                </span>
+                <ScoreGauge score={swingAnalysis.overall_score} />
                 <div>
-                  <div className="text-xs text-[var(--color-text-muted)] uppercase tracking-widest">Score</div>
-                  <div className="text-xs text-[var(--color-text-secondary)] capitalize">
+                  <div className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-widest">Overall</div>
+                  <div className="text-xs text-[var(--color-text-secondary)]">
                     {swingAnalysis.overall_score >= 80 ? 'Great swing' : swingAnalysis.overall_score >= 60 ? 'Room to improve' : 'Needs work'}
                   </div>
+                  {swingAnalysis.tempo_ratio !== undefined && (
+                    <div className="text-[10px] text-[var(--color-text-muted)] font-mono mt-0.5">
+                      Tempo {swingAnalysis.tempo_ratio.toFixed(1)}:1
+                      {swingAnalysis.x_factor_top !== undefined && ` · X-F ${Math.round(swingAnalysis.x_factor_top)}°`}
+                    </div>
+                  )}
                 </div>
               </div>
               {/* Toggle pills */}
               <div className="flex gap-2">
                 <TogglePill active={showSwingPath} onClick={() => setShowSwingPath((v) => !v)} label="Path" />
                 <TogglePill active={showReferenceLines} onClick={() => setShowReferenceLines((v) => !v)} label="Lines" />
+                <TogglePill active={showAngles} onClick={() => setShowAngles((v) => !v)} label="Angles" />
               </div>
             </div>
 

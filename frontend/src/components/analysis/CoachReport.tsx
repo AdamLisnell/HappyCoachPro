@@ -1,4 +1,4 @@
-import { Target, Dumbbell, BookOpen } from 'lucide-react';
+import { Target, Dumbbell, BookOpen, Wind } from 'lucide-react';
 import type { AICoachingReport } from '@/types';
 
 interface Props {
@@ -40,6 +40,14 @@ export function CoachReport({ report, loading, error }: Props) {
           <div className="text-[var(--color-text-secondary)] text-sm leading-relaxed whitespace-pre-line">
             {report.narrative}
           </div>
+
+          {/* Ball flight implication */}
+          {report.ball_flight && (
+            <div className="flex items-start gap-2 text-xs text-[var(--color-text-muted)] italic border-l-2 border-[var(--color-accent)]/40 pl-3">
+              <Wind className="w-3.5 h-3.5 text-[var(--color-accent)] flex-shrink-0 mt-0.5" />
+              <span>{report.ball_flight}</span>
+            </div>
+          )}
 
           {/* Focus Areas */}
           {report.focus_areas.length > 0 && (

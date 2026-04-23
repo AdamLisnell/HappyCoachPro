@@ -1,38 +1,53 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { SwingAnalysis } from '../src/types';
+import type { SwingAnalysis, GolfClub } from '../src/types';
 
-const SYSTEM_PROMPT = `You are an elite PGA-level golf instructor. You receive biomechanical swing data — measured angles, scores, and phase breakdowns — and deliver precise, actionable coaching.
+const SYSTEM_PROMPT = `You are an elite PGA-level golf instructor analyzing biomechanical swing data.
 
-Respond with a valid JSON object containing exactly these three fields:
+You MUST respond with a valid JSON object containing exactly these four fields:
 
-"narrative": 3–4 sentences. Start with the ONE biggest flaw and its measured value. Then what is working. Be direct — name the joint, the angle, the direction of error.
+"narrative": 3 sentences. Start with the ONE biggest flaw and its MEASURED value (e.g. "Hip rotation at top is restricted at 22° versus the 35–50° ideal"). Then note what is working well. Be direct — name the joint, the angle, the direction of error. No filler.
 
-"focus_areas": Array of exactly 3 strings ranked by priority. Format strictly: "[Joint/Movement]: [measured value] vs ideal [range]. [One-word verdict]." Example: "Hip rotation at top: 22° vs ideal 35–50°. Restricted."
+"ball_flight": 1 sentence. Explain what this swing likely produces as a ball flight outcome (slice, push, pull-hook, fat/thin contact, low launch, etc.) and WHY, based on the measurements. Example: "With an open face at impact and steep shoulder plane, expect a weak cut that loses distance right."
 
-"practice_plan": 4–6 sentences covering exactly 2 drills. For each drill: name it, describe the movement in one sentence, give specific reps/sets/time, and state the physical feeling to look for. Make it doable at a driving range with no equipment beyond a club.
+"focus_areas": Array of EXACTLY 3 strings ranked by priority. Format strictly: "[Joint/Movement]: [measured value] vs ideal [range]. [One-word verdict]." Example: "Hip rotation at top: 22° vs ideal 35–50°. Restricted."
 
-Rules: Never use filler phrases ("great job", "keep it up", "remember to"). Never repeat information from narrative in practice_plan. If a measurement is within optimal range, skip it in focus_areas and mention it briefly in narrative. Respond ONLY with the JSON.`;
+"practice_plan": 4–6 sentences covering EXACTLY 2 drills. For each drill: name it, describe the movement in one sentence, give specific reps/sets/time, and state the physical feeling to look for. End with one session-end feel checkpoint ("By the last swing you should feel X"). Range-friendly, no equipment beyond a club.
 
-// Optimal angle reference sent alongside measurements so Claude can reason about deviations
+Rules: Never use filler ("great job", "keep it up", "remember to"). Never repeat narrative content in practice_plan. Tailor advice to the club — driver needs upward angle of attack and wider arc, mid-iron needs ball-first contact and steeper plane, wedges need compact swing and hands-ahead impact. If a measurement is within optimal range, skip it in focus_areas. Respond ONLY with the JSON — no markdown, no prose.`;
+
 const OPTIMAL_REFERENCE = `
-OPTIMAL ANGLE REFERENCE (for context when reading measured values):
+OPTIMAL ANGLE REFERENCE:
 Address:  spine_angle 30–45°, knee_flex 155–175°
 Top:      shoulder_rotation 80–100°, hip_rotation 35–50°, left_elbow 160–180°, right_elbow 80–100°
 Impact:   spine_angle 25–40°, hip_rotation 35–50°, left_elbow 165–180°
 Finish:   shoulder_rotation 85–110°, hip_rotation 75–95°
-X-factor (shoulder–hip gap at top): ideally ≥45°
-Tempo ratio (backswing frames ÷ downswing frames): ideal 3:1
-`;
+X-factor at top (shoulder − hip): ideally ≥45°
+Tempo ratio (backswing ÷ downswing frames): ideal 3:1`;
+
+function clubContext(club: GolfClub): string {
+  if (club === 'driver' || club === 'wood_3' || club === 'wood_5') {
+    return 'Driver/Wood: expect wider arc, upward angle of attack, shoulder turn ≥90°, ball-first-on-upswing contact.';
+  }
+  if (club === 'putter') {
+    return 'Putter: pendulum shoulder motion only, minimal hip/wrist action.';
+  }
+  if (club.startsWith('iron_') || club === 'hybrid') {
+    return 'Mid/short iron: ball-first contact with small divot, steeper plane, 80–90° shoulder turn, hands ahead at impact.';
+  }
+  return 'Wedge: compact controlled swing, steep plane, hands well ahead at impact, limited lower-body rotation.';
+}
 
 function buildUserMessage(analysis: SwingAnalysis, cameraAngle: string): string {
   const lines: string[] = [
     `Camera: ${cameraAngle === 'behind' ? 'Down-the-line (behind golfer)' : 'Face-on / side-on'}`,
-    `Club: ${analysis.club}`,
+    `Club: ${analysis.club} — ${clubContext(analysis.club)}`,
     `Overall: ${analysis.overall_score}/100`,
-    '',
-    'Subscores:',
   ];
 
+  if (analysis.tempo_ratio !== undefined) lines.push(`Tempo ratio (BS:DS): ${analysis.tempo_ratio.toFixed(2)}:1`);
+  if (analysis.x_factor_top !== undefined) lines.push(`X-factor at top: ${analysis.x_factor_top.toFixed(0)}°`);
+
+  lines.push('', 'Subscores:');
   if (analysis.posture_score) lines.push(`  Posture ${analysis.posture_score.score}/100 (${analysis.posture_score.grade}): ${analysis.posture_score.feedback}${analysis.posture_score.details ? ' — ' + analysis.posture_score.details : ''}`);
   if (analysis.tempo_score) lines.push(`  Tempo ${analysis.tempo_score.score}/100 (${analysis.tempo_score.grade}): ${analysis.tempo_score.feedback}${analysis.tempo_score.details ? ' — ' + analysis.tempo_score.details : ''}`);
   if (analysis.rotation_score) lines.push(`  Rotation ${analysis.rotation_score.score}/100 (${analysis.rotation_score.grade}): ${analysis.rotation_score.feedback}${analysis.rotation_score.details ? ' — ' + analysis.rotation_score.details : ''}`);
@@ -50,14 +65,13 @@ function buildUserMessage(analysis: SwingAnalysis, cameraAngle: string): string 
   }
 
   if (analysis.tips.length) {
-    lines.push('', 'Rule-based flags (from biomechanical analysis engine):');
+    lines.push('', 'Rule-based flags:');
     for (const tip of analysis.tips) {
       lines.push(`  [${tip.category}] ${tip.title}: ${tip.description}`);
     }
   }
 
   lines.push('', OPTIMAL_REFERENCE);
-
   return lines.join('\n');
 }
 
@@ -80,7 +94,7 @@ export default async function handler(req: Request): Promise<Response> {
     const client = new Anthropic({ apiKey });
     const message = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 900,
+      max_tokens: 1100,
       system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as Parameters<typeof client.messages.create>[0]['system'][0]],
       messages: [{ role: 'user', content: buildUserMessage(analysis, cameraAngle) }],
     });
@@ -91,6 +105,7 @@ export default async function handler(req: Request): Promise<Response> {
 
     return Response.json({
       narrative: parsed.narrative ?? '',
+      ball_flight: parsed.ball_flight ?? '',
       focus_areas: parsed.focus_areas ?? [],
       practice_plan: parsed.practice_plan ?? '',
       generated_at: new Date().toISOString(),

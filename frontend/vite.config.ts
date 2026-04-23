@@ -27,11 +27,21 @@ function localApiPlugin(apiKey: string | undefined): Plugin {
             const parsed = JSON.parse(body)
             const { analysis, cameraAngle = 'side' } = parsed
 
+            const clubCtx = (c: string) =>
+              (c === 'driver' || c === 'wood_3' || c === 'wood_5') ? 'Driver/Wood: wider arc, upward angle of attack, shoulder turn ≥90°.'
+              : c === 'putter' ? 'Putter: pendulum shoulder motion only.'
+              : (c.startsWith('iron_') || c === 'hybrid') ? 'Mid/short iron: ball-first with small divot, steeper plane, 80–90° turn.'
+              : 'Wedge: compact controlled swing, hands well ahead at impact.'
+
             // Build user message matching the edge function
             const lines: string[] = [
               `Camera: ${cameraAngle === 'behind' ? 'Down-the-line' : 'Face-on / side-on'}`,
-              `Club: ${analysis.club}`, `Overall: ${analysis.overall_score}/100`, '', 'Subscores:',
+              `Club: ${analysis.club} — ${clubCtx(analysis.club)}`,
+              `Overall: ${analysis.overall_score}/100`,
             ]
+            if (analysis.tempo_ratio !== undefined) lines.push(`Tempo ratio (BS:DS): ${analysis.tempo_ratio.toFixed(2)}:1`)
+            if (analysis.x_factor_top !== undefined) lines.push(`X-factor at top: ${analysis.x_factor_top.toFixed(0)}°`)
+            lines.push('', 'Subscores:')
             const fmt = (s: { score: number; grade: string; feedback: string; details?: string | null }) =>
               `  ${s.score}/100 (${s.grade}): ${s.feedback}${s.details ? ' — ' + s.details : ''}`
             if (analysis.posture_score)  lines.push('  Posture'  + fmt(analysis.posture_score))
@@ -46,12 +56,14 @@ function localApiPlugin(apiKey: string | undefined): Plugin {
                 if (angles) lines.push(`  ${p.phase} (score ${p.score}/100): ${angles}`)
               }
             }
+            lines.push('', 'OPTIMAL: Top shoulder 80–100°, hip 35–50°, X-factor ≥45°. Impact spine 25–40°, hip 35–50°. Tempo 3:1.')
 
-            const SYSTEM = `You are an elite PGA-level golf instructor. Respond with a valid JSON object with exactly:
-"narrative": 3-4 sentences on biggest flaw (name angle+measurement) then what's working.
+            const SYSTEM = `You are an elite PGA-level golf instructor. Respond with a valid JSON object with EXACTLY these four fields:
+"narrative": 3 sentences. Start with the biggest flaw and its measured value, then what's working. No filler.
+"ball_flight": 1 sentence explaining the likely ball-flight outcome (slice/push/fat/thin/low-launch) and why.
 "focus_areas": array of 3 strings: "[Joint]: [measured]° vs ideal [range]. [Verdict]."
-"practice_plan": 4-6 sentences, 2 named drills with reps and feel cues.
-No filler phrases. JSON only.`
+"practice_plan": 4-6 sentences with EXACTLY 2 named drills (reps + feel cues) and one end-of-session feel checkpoint.
+Tailor to club type. No filler phrases. JSON only — no markdown.`
 
             const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
               method: 'POST',
@@ -62,7 +74,7 @@ No filler phrases. JSON only.`
               },
               body: JSON.stringify({
                 model: 'claude-sonnet-4-6',
-                max_tokens: 900,
+                max_tokens: 1100,
                 system: SYSTEM,
                 messages: [{ role: 'user', content: lines.join('\n') }],
               }),
@@ -101,7 +113,7 @@ export default defineConfig(({ mode }) => {
         name: 'HappyCoachPro',
         short_name: 'HappyCoach',
         description: 'AI-powered golf swing analyzer',
-        theme_color: '#0D2818',
+        theme_color: '#0A1F14',
         background_color: '#0A1F14',
         display: 'standalone',
         orientation: 'portrait',

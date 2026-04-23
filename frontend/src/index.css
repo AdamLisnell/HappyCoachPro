@@ -1,33 +1,37 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800;900&display=swap');
 @import "tailwindcss";
 
-/* 
- * HappyCoach2 Custom Styles
- * Premium golf app theme with dark green palette
+/*
+ * HappyCoach custom theme — premium golf aesthetic
  */
 
 :root {
-  /* Primary colors - Deep forest green */
+  /* Primary — deep forest green */
   --color-primary: #0D2818;
   --color-primary-light: #1A4D2E;
   --color-primary-dark: #061510;
-  
-  /* Accent - Gold */
+
+  /* Accent gold */
   --color-accent: #C9A227;
   --color-accent-light: #D4B445;
-  
+  --color-accent-bright: #E8C547;
+
   /* Surfaces */
   --color-surface: #0A1F14;
   --color-surface-card: #163326;
-  
+
   /* Text */
   --color-text: #F5F9F7;
   --color-text-secondary: #B8D4C4;
   --color-text-muted: #6A8F7A;
-  
+
   /* Status */
   --color-success: #2E8B57;
   --color-warning: #DAA520;
   --color-danger: #C93545;
+
+  /* Display serif for scores / headings */
+  --font-display: 'Playfair Display', Georgia, 'Times New Roman', serif;
 }
 
 body {
@@ -38,22 +42,42 @@ body {
   -moz-osx-font-smoothing: grayscale;
   margin: 0;
   min-height: 100vh;
+  /* Prevent pull-to-refresh clashing with in-page gestures on mobile */
+  overscroll-behavior-y: contain;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
 }
-
 ::-webkit-scrollbar-track {
   background-color: var(--color-primary-dark);
 }
-
 ::-webkit-scrollbar-thumb {
   background-color: var(--color-primary-light);
   border-radius: 9999px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--color-accent);
+}
+
+/* Shimmer animation for skeleton loaders */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-card) 0%,
+    rgba(201,162,39,0.08) 50%,
+    var(--color-surface-card) 100%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.6s linear infinite;
 }

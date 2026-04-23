@@ -1,7 +1,3 @@
-/**
- * Bottom Navigation Component
- */
-
 import { Camera, Film, BarChart3, Settings } from 'lucide-react';
 
 export type NavTab = 'record' | 'analyze' | 'history' | 'settings';
@@ -20,22 +16,34 @@ export function Navigation({ activeTab, onTabChange }: NavigationProps) {
   ];
 
   return (
-    <nav className="bg-[var(--color-primary)] border-t border-[var(--color-primary-light)]">
-      <div className="flex items-center justify-around py-2">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => onTabChange(tab.id)}
-            className={`flex flex-col items-center gap-1 px-4 py-2 rounded-xl transition-colors ${
-              activeTab === tab.id
-                ? 'text-[var(--color-accent)]'
-                : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
-            }`}
-          >
-            {tab.icon}
-            <span className="text-xs font-medium">{tab.label}</span>
-          </button>
-        ))}
+    <nav
+      className="bg-[var(--color-primary)] border-t border-[var(--color-primary-light)]"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
+      <div className="flex items-stretch justify-around py-1">
+        {tabs.map((tab) => {
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => onTabChange(tab.id)}
+              aria-current={active ? 'page' : undefined}
+              className={`relative flex flex-col items-center justify-center gap-1 px-4 py-2 min-h-[48px] min-w-[56px] transition-colors ${
+                active
+                  ? 'text-[var(--color-accent-bright)]'
+                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+              }`}
+            >
+              {tab.icon}
+              <span className="text-[11px] font-medium tracking-wide">{tab.label}</span>
+              <span
+                className={`absolute bottom-0 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full transition-all ${
+                  active ? 'bg-[var(--color-accent-bright)] opacity-100' : 'bg-transparent opacity-0'
+                }`}
+              />
+            </button>
+          );
+        })}
       </div>
     </nav>
   );

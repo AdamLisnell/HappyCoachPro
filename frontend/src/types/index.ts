@@ -106,6 +106,8 @@ export interface SwingAnalysis {
   tips: CoachingTip[];
   summary: string;
   key_frames: Record<string, number>;
+  tempo_ratio?: number;
+  x_factor_top?: number;
 }
 
 // =============================================================================
@@ -158,6 +160,7 @@ export interface AICoachingReport {
   narrative: string;
   focus_areas: string[];
   practice_plan: string;
+  ball_flight?: string;
   generated_at: string;
 }
 
