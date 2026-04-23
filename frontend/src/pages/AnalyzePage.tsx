@@ -177,35 +177,61 @@ export function AnalyzePage({ initialBlob, onConsumed }: AnalyzePageProps = {}) 
     setPageState('analyzing');
     cancelRef.current = false;
 
-    // Ensure MediaPipe is ready
-    await poseDetector.initialize();
+    // Ensure MediaPipe is ready (GPU → CPU fallback)
+    try {
+      await poseDetector.initialize();
+    } catch (e) {
+      setAnalysisError(
+        e instanceof Error ? `Pose detection unavailable: ${e.message}` : 'Failed to load pose detection model.'
+      );
+      setPageState('upload');
+      return;
+    }
 
     // Create a hidden video element for frame extraction
     const video = document.createElement('video');
     video.src = url;
     video.muted = true;
     video.playsInline = true;
-    video.crossOrigin = 'anonymous';
+    // No crossOrigin on local blobs — it causes CORS errors on iOS
+    if (!url.startsWith('blob:')) video.crossOrigin = 'anonymous';
 
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error('Failed to load video'));
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error('Failed to load video — unsupported format?'));
+        setTimeout(() => reject(new Error('Video load timed out')), 15000);
+      });
+    } catch (e) {
+      setAnalysisError(e instanceof Error ? e.message : 'Video could not be loaded');
+      setPageState('upload');
+      return;
+    }
 
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const duration = video.duration;
+    if (!duration || !isFinite(duration) || duration <= 0) {
+      setAnalysisError('Video duration could not be read. Try a different format (MP4 recommended).');
+      setPageState('upload');
+      return;
+    }
+
     const step = 1 / ANALYSIS_FPS;
-    const totalSteps = Math.ceil(duration / step);
     const collectedFrames: PoseFrame[] = [];
     let frameNumber = 0;
 
-    for (let t = 0; t < duration && !cancelRef.current; t += step) {
-      video.currentTime = t;
-      await new Promise<void>((resolve) => {
-        video.onseeked = () => resolve();
+    // Helper: seek to time with a fallback timeout (iOS onseeked can stall)
+    const seekTo = (t: number) =>
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 800);
+        video.onseeked = () => { clearTimeout(timer); resolve(); };
+        video.currentTime = t;
       });
+
+    for (let t = 0; t < duration && !cancelRef.current; t += step) {
+      await seekTo(t);
 
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;

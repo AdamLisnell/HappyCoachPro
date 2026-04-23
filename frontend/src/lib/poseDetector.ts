@@ -28,24 +28,39 @@ export async function initialize(): Promise<void> {
   initPromise = (async () => {
     const vision = await FilesetResolver.forVisionTasks(WASM_URL);
 
-    const baseOptions = {
-      baseOptions: {
-        modelAssetPath: MODEL_URL,
-        delegate: 'GPU' as const,
-      },
-      numPoses: 1,
-      minPoseDetectionConfidence: 0.5,
-      minPosePresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    };
+    // Try GPU delegate first; fall back to CPU if it fails (needed for iOS Safari)
+    const delegates: Array<'GPU' | 'CPU'> = ['GPU', 'CPU'];
 
-    [imageLandmarker, videoLandmarker] = await Promise.all([
-      PoseLandmarker.createFromOptions(vision, { ...baseOptions, runningMode: 'IMAGE' }),
-      PoseLandmarker.createFromOptions(vision, { ...baseOptions, runningMode: 'VIDEO' }),
-    ]);
+    for (const delegate of delegates) {
+      try {
+        const opts = {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate },
+          numPoses: 1,
+          minPoseDetectionConfidence: 0.5,
+          minPosePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        };
+        [imageLandmarker, videoLandmarker] = await Promise.all([
+          PoseLandmarker.createFromOptions(vision, { ...opts, runningMode: 'IMAGE' }),
+          PoseLandmarker.createFromOptions(vision, { ...opts, runningMode: 'VIDEO' }),
+        ]);
+        console.log(`MediaPipe initialized with ${delegate} delegate`);
+        return;
+      } catch (e) {
+        console.warn(`MediaPipe ${delegate} delegate failed, trying next…`, e);
+        imageLandmarker = null;
+        videoLandmarker = null;
+      }
+    }
+
+    throw new Error('MediaPipe failed to initialize on this device');
   })();
 
-  return initPromise;
+  // If init fails, clear the promise so a retry is possible
+  return initPromise.catch((e) => {
+    initPromise = null;
+    throw e;
+  });
 }
 
 export function isReady(): boolean {
