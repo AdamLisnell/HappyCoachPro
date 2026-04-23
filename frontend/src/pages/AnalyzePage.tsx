@@ -191,37 +191,42 @@ export function AnalyzePage({ initialBlob, onConsumed }: AnalyzePageProps = {}) 
       return;
     }
 
-    // Create a hidden video element for frame extraction
+    // Create a hidden video element and attach it to DOM.
+    // iOS Safari requires the element to be in the DOM to draw to canvas.
     const video = document.createElement('video');
-    video.src = url;
     video.muted = true;
     video.playsInline = true;
-    // No crossOrigin on local blobs — it causes CORS errors on iOS
-    if (!url.startsWith('blob:')) video.crossOrigin = 'anonymous';
+    video.setAttribute('playsinline', '');
+    video.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px';
+    document.body.appendChild(video);
+    video.src = url;
 
     try {
       await new Promise<void>((resolve, reject) => {
-        video.onloadedmetadata = () => resolve();
-        video.onerror = () => reject(new Error('Failed to load video — unsupported format?'));
-        setTimeout(() => reject(new Error('Video load timed out')), 15000);
+        video.onloadeddata = () => resolve();   // loadeddata = first frame decoded, safer than loadedmetadata
+        video.onerror = () => reject(new Error('Failed to load video — try MP4 format'));
+        setTimeout(() => reject(new Error('Video load timed out after 15s')), 15000);
+        video.load();
       });
     } catch (e) {
+      document.body.removeChild(video);
       setAnalysisError(e instanceof Error ? e.message : 'Video could not be loaded');
       setPageState('upload');
       return;
     }
 
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) { document.body.removeChild(video); return; }
 
     const duration = video.duration;
     if (!duration || !isFinite(duration) || duration <= 0) {
-      setAnalysisError('Video duration could not be read. Try a different format (MP4 recommended).');
+      document.body.removeChild(video);
+      setAnalysisError('Video duration unreadable. Try MP4 format.');
       setPageState('upload');
       return;
     }
 
-    // Scale canvas to CANVAS_MAX_WIDTH — smaller = much faster MediaPipe
+    // Scale canvas down — smaller canvas = much faster MediaPipe inference
     const vw = video.videoWidth || 640;
     const vh = video.videoHeight || 480;
     const scale = Math.min(1, CANVAS_MAX_WIDTH / vw);
@@ -232,53 +237,38 @@ export function AnalyzePage({ initialBlob, onConsumed }: AnalyzePageProps = {}) 
 
     const collectedFrames: PoseFrame[] = [];
     let frameNumber = 0;
+    const step = 1 / ANALYSIS_FPS;
 
-    // Play-based extraction: much faster than seek-based on mobile.
-    // We play the video and sample frames at ANALYSIS_FPS using requestVideoFrameCallback
-    // (falling back to timeupdate + rAF on browsers that lack it).
-    const frameInterval = 1 / ANALYSIS_FPS;
-    let lastCapturedTime = -frameInterval;
+    // Seek-based extraction — reliable on iOS, no user-gesture requirement.
+    // Each seek is fast now because canvas is small and MediaPipe runs on CPU.
+    const seekTo = (t: number) =>
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 600);  // max 600ms per seek
+        video.onseeked = () => { clearTimeout(timer); resolve(); };
+        video.currentTime = t;
+      });
 
-    await new Promise<void>((resolve) => {
-      const capture = () => {
-        if (cancelRef.current) { resolve(); return; }
-        const t = video.currentTime;
-        if (t - lastCapturedTime >= frameInterval - 0.01) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const pose = poseDetector.detectImage(canvas, frameNumber, Math.round(t * 1000));
-          if (pose) {
-            collectedFrames.push(pose);
-            setPoseFrames((prev) => [...prev, pose]);
-          }
-          lastCapturedTime = t;
-          frameNumber++;
-          setAnalyzeProgress(Math.min(99, Math.round((t / duration) * 100)));
-        }
-        if (!video.ended && !video.paused) requestAnimationFrame(capture);
-        else resolve();
-      };
-
-      video.currentTime = 0;
-      // Seek to start, then play
-      const startPlayback = () => {
-        video.play().then(() => requestAnimationFrame(capture)).catch(() => resolve());
-        video.onended = () => resolve();
-      };
-      if (video.readyState >= 3) {
-        startPlayback();
-      } else {
-        const onSeeked = () => { video.onseeked = null; startPlayback(); };
-        video.onseeked = onSeeked;
-        // If onseeked doesn't fire, start anyway after 2s
-        setTimeout(() => { video.onseeked = null; startPlayback(); }, 2000);
+    for (let t = 0; t < duration && !cancelRef.current; t += step) {
+      await seekTo(t);
+      // Yield one frame to let the browser composite the decoded frame into the video element
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const pose = poseDetector.detectImage(canvas, frameNumber, Math.round(t * 1000));
+      if (pose) {
+        collectedFrames.push(pose);
+        setPoseFrames((prev) => [...prev, pose]);
       }
-    });
+      frameNumber++;
+      setAnalyzeProgress(Math.min(99, Math.round(((t + step) / duration) * 100)));
+    }
 
-    video.pause();
+    document.body.removeChild(video);
     if (cancelRef.current) return;
 
     if (collectedFrames.length < 3) {
-      setAnalysisError('Not enough pose data detected. Try a clearer side-view video with good lighting.');
+      setAnalysisError(
+        `Pose detection failed (${collectedFrames.length} poses found). Ensure the full body is visible in good lighting, or try a different video.`
+      );
       setPageState('upload');
       return;
     }
