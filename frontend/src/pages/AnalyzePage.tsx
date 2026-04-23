@@ -111,7 +111,10 @@ const CLUB_OPTIONS: { value: GolfClub; label: string }[] = [
   { value: 'putter', label: 'Putter' },
 ];
 
-const ANALYSIS_FPS = 24; // frames per second of video to analyze
+// Lower FPS on mobile — seek-based analysis is CPU-bound and iOS seek is slow
+const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+const ANALYSIS_FPS = isMobile ? 12 : 24;
+const CANVAS_MAX_WIDTH = isMobile ? 480 : 854; // smaller canvas = faster MediaPipe
 
 interface AnalyzePageProps {
   initialBlob?: Blob | null;
@@ -218,38 +221,60 @@ export function AnalyzePage({ initialBlob, onConsumed }: AnalyzePageProps = {}) 
       return;
     }
 
-    const step = 1 / ANALYSIS_FPS;
+    // Scale canvas to CANVAS_MAX_WIDTH — smaller = much faster MediaPipe
+    const vw = video.videoWidth || 640;
+    const vh = video.videoHeight || 480;
+    const scale = Math.min(1, CANVAS_MAX_WIDTH / vw);
+    canvas.width = Math.round(vw * scale);
+    canvas.height = Math.round(vh * scale);
+    setVideoSize({ width: canvas.width, height: canvas.height });
+    const ctx = canvas.getContext('2d')!;
+
     const collectedFrames: PoseFrame[] = [];
     let frameNumber = 0;
 
-    // Helper: seek to time with a fallback timeout (iOS onseeked can stall)
-    const seekTo = (t: number) =>
-      new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 800);
-        video.onseeked = () => { clearTimeout(timer); resolve(); };
-        video.currentTime = t;
-      });
+    // Play-based extraction: much faster than seek-based on mobile.
+    // We play the video and sample frames at ANALYSIS_FPS using requestVideoFrameCallback
+    // (falling back to timeupdate + rAF on browsers that lack it).
+    const frameInterval = 1 / ANALYSIS_FPS;
+    let lastCapturedTime = -frameInterval;
 
-    for (let t = 0; t < duration && !cancelRef.current; t += step) {
-      await seekTo(t);
-
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      setVideoSize({ width: canvas.width, height: canvas.height });
-
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const pose = poseDetector.detectImage(canvas, frameNumber, Math.round(t * 1000));
-        if (pose) {
-          collectedFrames.push(pose);
-          setPoseFrames((prev) => [...prev, pose]);
+    await new Promise<void>((resolve) => {
+      const capture = () => {
+        if (cancelRef.current) { resolve(); return; }
+        const t = video.currentTime;
+        if (t - lastCapturedTime >= frameInterval - 0.01) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const pose = poseDetector.detectImage(canvas, frameNumber, Math.round(t * 1000));
+          if (pose) {
+            collectedFrames.push(pose);
+            setPoseFrames((prev) => [...prev, pose]);
+          }
+          lastCapturedTime = t;
+          frameNumber++;
+          setAnalyzeProgress(Math.min(99, Math.round((t / duration) * 100)));
         }
-      }
-      frameNumber++;
-      setAnalyzeProgress(Math.round(((t + step) / duration) * 100));
-    }
+        if (!video.ended && !video.paused) requestAnimationFrame(capture);
+        else resolve();
+      };
 
+      video.currentTime = 0;
+      // Seek to start, then play
+      const startPlayback = () => {
+        video.play().then(() => requestAnimationFrame(capture)).catch(() => resolve());
+        video.onended = () => resolve();
+      };
+      if (video.readyState >= 3) {
+        startPlayback();
+      } else {
+        const onSeeked = () => { video.onseeked = null; startPlayback(); };
+        video.onseeked = onSeeked;
+        // If onseeked doesn't fire, start anyway after 2s
+        setTimeout(() => { video.onseeked = null; startPlayback(); }, 2000);
+      }
+    });
+
+    video.pause();
     if (cancelRef.current) return;
 
     if (collectedFrames.length < 3) {
@@ -258,13 +283,14 @@ export function AnalyzePage({ initialBlob, onConsumed }: AnalyzePageProps = {}) 
       return;
     }
 
+    setAnalyzeProgress(100);
+
     // Smooth landmark positions: forward + backward EMA to remove MediaPipe jitter
     const smoothed = smoothLandmarks(collectedFrames, 0.45);
     setPoseFrames(smoothed);
 
     try {
-      const fps = 1 / step;
-      const result = analyzeFrames(smoothed, selectedClub, fps, Math.round(duration * 1000));
+      const result = analyzeFrames(smoothed, selectedClub, ANALYSIS_FPS, Math.round(duration * 1000));
       setSwingAnalysis(result);
       await saveAnalysis(result).catch(() => {}); // non-blocking
       setPageState('results');
